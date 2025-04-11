@@ -2,6 +2,7 @@ import { config } from "../../package.json"
 import { getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 import { ProgressWindowHelper } from "zotero-plugin-toolkit/dist/helpers/progressWindow";
+import { searchCNKI } from "./services/cnki"
 export class ZInsUtils {
   static registerPrefs() {
     const prefOptions = {
@@ -177,6 +178,7 @@ export class ZInspire {
       this.numberOfUpdatedItems = 0;
       this.counter = 0;
       this.CrossRefcounter = 0;
+      this.CNKIcounter = 0;
       this.error_norecid = false;
       this.error_norecid_shown = false;
       this.final_count_shown = false;
@@ -745,19 +747,21 @@ async function getCrossrefCount(item: Zotero.Item) {
   return count;
 }
 
-// TODO
+/**
+ * Copied and modified from https://github.com/l0o0/jasminum/blob/main/src/modules/tools.ts
+ */
 async function getCNKICount(item: Zotero.Item) {
-  let cite = 0;
-  // const searchOption = {
-  //   title: item.getField("title"),
-  //   author: item.getCreators()[0].lastName + item.getCreators()[0].firstName,
-  // };
-  // const searchResults = await addon.scraper.cnki?.search(searchOption);
-  // if (searchResults && searchResults.length > 0) {
-  //   cite = searchResults[0].citation;
-  //   ztoolkit.log(`CNKI citation: ${cite}`);
-  // }
-  return cite;
+  let cite = "-1";
+  const searchOption = {
+    title: item.getField("title"),
+    author: item.getCreators()[0].lastName + item.getCreators()[0].firstName,
+  };
+  const searchResults = await searchCNKI(searchOption);
+  if (searchResults && searchResults.length > 0) {
+    cite = (searchResults[0].citation as string) ? (searchResults[0].citation as string) : "-1";
+    ztoolkit.log(`CNKI citation: ${cite}`);
+  }
+  return parseInt(cite);
 }
 
 async function setInspireMeta(item: Zotero.Item, metaInspire: jsobject, operation: string) {
@@ -935,12 +939,12 @@ async function setCrossRefCitations(item: Zotero.Item) {
 async function setCNKICitations(item: Zotero.Item) {
   let extra = item.getField('extra')
   let count_cnki = await getCNKICount(item)
-  if (count_cnki > 0) {
+  if (count_cnki >= 0) {
     extra = setExtraCitations(extra, 'CNKI', count_cnki) as string
     extra = extra.replace(/\n\n/mg, '\n')
     item.setField('extra', extra)
   } else {
-    count_cnki = 0
+    count_cnki = -1
   }
   return count_cnki
 }
