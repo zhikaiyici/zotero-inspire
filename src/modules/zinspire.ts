@@ -144,17 +144,19 @@ export class ZInspire {
   numberOfUpdatedItems: number;
   counter: number;
   CrossRefcounter: number;
+  CNKIcounter: number;
   error_norecid: boolean;
   error_norecid_shown: boolean;
   final_count_shown: boolean;
   progressWindow: ProgressWindowHelper;
-  constructor(current: number = -1, toUpdate: number = 0, itemsToUpdate: Zotero.Item[] = [], numberOfUpdatedItems: number = 0, counter: number = 0, CrossRefcounter: number = 0, error_norecid: boolean = false, error_norecid_shown: boolean = false, final_count_shown: boolean = false) {
+  constructor(current: number = -1, toUpdate: number = 0, itemsToUpdate: Zotero.Item[] = [], numberOfUpdatedItems: number = 0, counter: number = 0, CrossRefcounter: number = 0, CNKIcounter: number = 0, error_norecid: boolean = false, error_norecid_shown: boolean = false, final_count_shown: boolean = false) {
     this.current = current
     this.toUpdate = toUpdate
     this.itemsToUpdate = itemsToUpdate
     this.numberOfUpdatedItems = numberOfUpdatedItems
     this.counter = counter
     this.CrossRefcounter = CrossRefcounter
+    this.CNKIcounter = CNKIcounter
     this.error_norecid = error_norecid
     this.error_norecid_shown = error_norecid_shown
     this.final_count_shown = final_count_shown
@@ -179,46 +181,93 @@ export class ZInspire {
       this.error_norecid_shown = false;
       this.final_count_shown = false;
     } else {
-      if (this.error_norecid) {
+      // if (this.error_norecid) {
+      //   this.progressWindow.close();
+      //   const icon = "chrome://zotero/skin/cross.png";
+      //   if (this.error_norecid && !this.error_norecid_shown) {
+      //     //ztoolkit.log("hello");
+      //     const progressWindowNoRecid = new ztoolkit.ProgressWindow(config.addonName, { closeOnClick: true });
+      //     progressWindowNoRecid.changeHeadline("INSPIRE recid not found");
+      //     if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
+      //       // progressWindowNoRecid.ItemProgress.setText("No INSPIRE recid was found for some items. These have been tagged with '" + getPref("tag_norecid") + "'.")
+      //       progressWindowNoRecid.createLine({ icon: icon, text: "No INSPIRE recid was found for some items. These have been tagged with '" + getPref("tag_norecid") + "'." });
+      //     } else {
+      //       // progressWindowNoRecid.ItemProgress.setText("No INSPIRE recid was found for some items.")
+      //       progressWindowNoRecid.createLine({ icon: icon, text: "No INSPIRE recid was found for some items." });
+      //     }
+      //     progressWindowNoRecid.show();
+      //     progressWindowNoRecid.startCloseTimer(8000);
+      //     this.error_norecid_shown = true;
+      //   }
+      // } else {
+      //   if (!this.final_count_shown) {
+      //     const icon = "chrome://zotero/skin/tick.png";
+      //     this.progressWindow = new ztoolkit.ProgressWindow(config.addonName, {
+      //       closeOnClick: true,
+      //     });
+      //     this.progressWindow.changeHeadline("Finished");
+      //     // ztoolkit.log(this.progressWindow.ItemProgress)
+      //     if (operation === "full" || operation === "noabstract") {
+      //       this.progressWindow.createLine({
+      //         text: "INSPIRE metadata updated for " +
+      //           this.counter + " items.", progress: 100
+      //       });
+      //     } else if (operation === "citations") {
+      //       this.progressWindow.createLine({
+      //         text: "INSPIRE citations updated for " +
+      //           this.counter + " items;\n" +
+      //           "CrossRef citations updated for " +
+      //           this.CrossRefcounter + " items.",
+      //         progress: 100
+      //       });
+      //     }
+      //     this.progressWindow.show();
+      //     this.progressWindow.startCloseTimer(4000);
+      //     this.final_count_shown = true;
+      //   }
+      // }
+      const iconTick = "chrome://zotero/skin/tick.png";
+      const iconCross = "chrome://zotero/skin/cross.png";
+      if (operation != "citations") {
         this.progressWindow.close();
-        const icon = "chrome://zotero/skin/cross.png";
-        if (this.error_norecid && !this.error_norecid_shown) {
-          //ztoolkit.log("hello");
-          const progressWindowNoRecid = new ztoolkit.ProgressWindow(config.addonName, { closeOnClick: true });
-          progressWindowNoRecid.changeHeadline("INSPIRE recid not found");
-          if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
-            // progressWindowNoRecid.ItemProgress.setText("No INSPIRE recid was found for some items. These have been tagged with '" + getPref("tag_norecid") + "'.")
-            progressWindowNoRecid.createLine({ icon: icon, text: "No INSPIRE recid was found for some items. These have been tagged with '" + getPref("tag_norecid") + "'." });
-          } else {
-            // progressWindowNoRecid.ItemProgress.setText("No INSPIRE recid was found for some items.")
-            progressWindowNoRecid.createLine({ icon: icon, text: "No INSPIRE recid was found for some items." });
-          }
-          progressWindowNoRecid.show();
-          progressWindowNoRecid.startCloseTimer(8000);
-          this.error_norecid_shown = true;
+        // const icon = "chrome://zotero/skin/cross.png";
+        //ztoolkit.log("hello");
+        const progressWindowNoRecid = new ztoolkit.ProgressWindow(config.addonName, { closeOnClick: true });
+        let unUpdated = this.toUpdate - this.counter;
+        if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
+          progressWindowNoRecid.createLine({
+            icon: unUpdated > 0 ? iconCross : iconTick,
+            text: this.toUpdate + (this.toUpdate > 1 ? " items" : " item") + " processed.\n" +
+              (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter > 1 ? " items.\n" : " item.\n") : "") +
+              (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated > 1 ? " items, which have" : " item, which has") + " been tagged with '" + getPref("tag_norecid") + "'." : "")
+          });
+        } else {
+          progressWindowNoRecid.createLine({
+            icon: unUpdated > 0 ? iconCross : iconTick,
+            text: this.toUpdate + (this.toUpdate > 1 ? " items" : " item") + " processed.\n" +
+              (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter > 1 ? " items.\n" : " item.\n") : "") +
+              (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated > 1 ? " items." : " item.") : "")
+          });
         }
+        progressWindowNoRecid.show();
+        progressWindowNoRecid.startCloseTimer(8000);
+        this.error_norecid_shown = true;
       } else {
         if (!this.final_count_shown) {
-          const icon = "chrome://zotero/skin/tick.png";
+          /// const icon = "chrome://zotero/skin/tick.png";
           this.progressWindow = new ztoolkit.ProgressWindow(config.addonName, {
             closeOnClick: true,
           });
-          this.progressWindow.changeHeadline("Finished");
-          // ztoolkit.log(this.progressWindow.ItemProgress)
-          if (operation === "full" || operation === "noabstract") {
-            this.progressWindow.createLine({
-              text: "INSPIRE metadata updated for " +
-                this.counter + " items.", progress: 100
-            });
-          } else if (operation === "citations") {
-            this.progressWindow.createLine({
-              text: "INSPIRE citations updated for " +
-                this.counter + " items;\n" +
-                "CrossRef citations updated for " +
-                this.CrossRefcounter + " items.",
-              progress: 100
-            });
-          }
+          let unUpdated = this.toUpdate - this.counter - this.CrossRefcounter - this.CNKIcounter;
+          this.progressWindow.createLine({
+            icon: unUpdated > 0 ? iconCross : iconTick,
+            text: this.toUpdate + (this.toUpdate > 1 ? " items" : " item") + " processed.\n" +
+              (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter > 1 ? " items.\n" : " item.\n") : "") +
+              (this.CrossRefcounter > 0 ? "CrossRef citations updated for " + this.CrossRefcounter + (this.CrossRefcounter > 1 ? " items.\n" : " item.\n") : "") +
+              (this.CNKIcounter > 0 ? "CNKI citations updated for " + this.CNKIcounter + (this.CNKIcounter > 1 ? " items.\n" : " item.\n") : "") +
+              (unUpdated > 0 ? "No citation data was found for " + unUpdated + (unUpdated > 1 ? " items." : " item.") : ""),
+            progress: 100
+          });
           this.progressWindow.show();
           this.progressWindow.startCloseTimer(4000);
           this.final_count_shown = true;
@@ -342,6 +391,14 @@ export class ZInspire {
           item.saveTx();
           if (crossref_count >= 0) {
             this.CrossRefcounter++
+          } else {
+            if (/[\u4e00-\u9fa5]/.test(item.getField("title"))) {
+              const cnki_count = await setCNKICitations(item);
+              item.saveTx();
+              if (cnki_count > 0) {
+                this.CNKIcounter++
+              }
+            }
           }
         }
       }
@@ -688,6 +745,21 @@ async function getCrossrefCount(item: Zotero.Item) {
   return count;
 }
 
+// TODO
+async function getCNKICount(item: Zotero.Item) {
+  let cite = 0;
+  // const searchOption = {
+  //   title: item.getField("title"),
+  //   author: item.getCreators()[0].lastName + item.getCreators()[0].firstName,
+  // };
+  // const searchResults = await addon.scraper.cnki?.search(searchOption);
+  // if (searchResults && searchResults.length > 0) {
+  //   cite = searchResults[0].citation;
+  //   ztoolkit.log(`CNKI citation: ${cite}`);
+  // }
+  return cite;
+}
+
 async function setInspireMeta(item: Zotero.Item, metaInspire: jsobject, operation: string) {
 
   // const today = new Date(Date.now()).toLocaleDateString('zh-CN');
@@ -858,6 +930,19 @@ async function setCrossRefCitations(item: Zotero.Item) {
     count_crossref = -1
   }
   return count_crossref
+}
+
+async function setCNKICitations(item: Zotero.Item) {
+  let extra = item.getField('extra')
+  let count_cnki = await getCNKICount(item)
+  if (count_cnki > 0) {
+    extra = setExtraCitations(extra, 'CNKI', count_cnki) as string
+    extra = extra.replace(/\n\n/mg, '\n')
+    item.setField('extra', extra)
+  } else {
+    count_cnki = 0
+  }
+  return count_cnki
 }
 
 function setCitations(extra: string, citation_count: number, citation_count_wo_self_citations: number) {
