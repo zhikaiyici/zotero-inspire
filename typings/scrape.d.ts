@@ -13,6 +13,7 @@
 // }
 
 type SearchOption = {
+  source?: string;
   author?: string;
   title: string;
 };

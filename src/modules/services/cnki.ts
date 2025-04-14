@@ -30,6 +30,8 @@ function createSearchPostOptions(searchOption: SearchOption) {
     }
     if (searchOption.author)
         searchExp = searchExp + ` AND AU='${searchOption.author}'`;
+    if (searchOption.source)
+        searchExp = searchExp + ` AND LY='${searchOption.source}'`;
     ztoolkit.log("Search expression: ", searchExp);
     const searchExpAside = searchExp.replace(/'/g, "&#39;");
     let queryJson;
@@ -171,7 +173,7 @@ function createSearchPostOptions(searchOption: SearchOption) {
     };
 }
 
-export async function searchCNKI(searchOption: SearchOption,): Promise<ScrapeSearchResult[] | null> {
+async function searchWeb(searchOption: SearchOption) {
     ztoolkit.log("serch options: ", searchOption);
     const postOption = createSearchPostOptions(searchOption);
     const resp = await Zotero.HTTP.request("POST", postOption.url, {
@@ -186,6 +188,30 @@ export async function searchCNKI(searchOption: SearchOption,): Promise<ScrapeSea
         "table.result-table-list > tbody > tr",
     );
     ztoolkit.log(`CNKI search result: ${resultRows.length}`);
+    return resultRows;
+}
+
+export async function searchCNKI(searchOption: SearchOption,): Promise<ScrapeSearchResult[] | null> {
+    // ztoolkit.log("serch options: ", searchOption);
+    // const postOption = createSearchPostOptions(searchOption);
+    // const resp = await Zotero.HTTP.request("POST", postOption.url, {
+    //     headers: postOption.headers,
+    //     body: postOption.data,
+    // });
+    // // TODO
+    // // Need to handle some HTTP request ERROR
+    // // ztoolkit.log(resp.responseText);
+    // const searchDoc = text2HTMLDoc(resp.responseText);
+    // const resultRows = searchDoc.querySelectorAll(
+    //     "table.result-table-list > tbody > tr",
+    // );
+    // ztoolkit.log(`CNKI search result: ${resultRows.length}`);
+    let resultRows = await searchWeb(searchOption);
+    if (resultRows.length == 0) {
+        ztoolkit.log("CNKI no items found after the first search.");
+        searchOption.author = "";
+        resultRows = await searchWeb(searchOption)
+    }
     if (resultRows.length == 0) {
         ztoolkit.log("CNKI no items found.");
         return null;
@@ -201,6 +227,7 @@ export async function searchCNKI(searchOption: SearchOption,): Promise<ScrapeSea
             return {
                 source: "CNKI",
                 title: title,
+                originTitle: dt.innerText("td.name a"),
                 url: url,
                 date: Zotero.Date.strToISO(dt.innerText("td.date")) || "",
                 netFirst: dt.innerText("td.name > b.marktip"),

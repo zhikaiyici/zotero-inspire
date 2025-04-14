@@ -755,11 +755,19 @@ async function getCNKICount(item: Zotero.Item) {
   const searchOption = {
     title: item.getField("title"),
     author: item.getCreators()[0].lastName + item.getCreators()[0].firstName,
+    source: item.getField("publicationTitle"),
   };
   const searchResults = await searchCNKI(searchOption);
   if (searchResults && searchResults.length > 0) {
-    cite = (searchResults[0].citation as string) ? (searchResults[0].citation as string) : "-1";
-    ztoolkit.log(`CNKI citation: ${cite}`);
+    for (let searchRes of searchResults) {
+      // ztoolkit.log(`searchRes.title: ${searchRes.originTitle}`);
+      // ztoolkit.log(`searchOption.title: ${searchOption.title}`);
+      if (searchRes.originTitle === searchOption.title) {
+        cite = (searchRes.citation as string) ? (searchRes.citation as string) : "-1";
+        ztoolkit.log(`CNKI citation: ${cite}`);
+        break;
+      }
+    }
   }
   return parseInt(cite);
 }
@@ -910,15 +918,15 @@ function setExtraCitations(extra: any, source: string, citation_count: any) {
   const today = new Date(Date.now()).toLocaleDateString('zh-CN');
   // Zotero.debug(`setExtraCitations citation count: ${citation_count}`)
   // judge whether extra has the citation record
-  if (/(|.*?\n)\d+\scitations[\s\S]*?/.test(extra)) {
-    const existingCitations = extra.match(/^\d+\scitations/mg).map((e: any) => Number(e.replace(" citations", "")))
+  if (/(|.*?\n)\d+\scitations?[\s\S]*?/.test(extra)) {
+    const existingCitations = extra.match(/^\d+\scitations?/mg).map((e: any) => Number(e.replace(/\scitations?/g, "")))
     // if the citations are different, replace the old one 
     if (citation_count !== existingCitations[0]) {
-      extra = extra.replace(/^.*citations.*$\n/mg, "");
-      extra = `${citation_count} citations (${source} ${today})\n` + extra
+      extra = extra.replace(/^.*citations?.*$\n?/mg, "");
+      extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (${source} ${today})\n` + extra
     }
   } else {
-    extra = `${citation_count} citations (${source} ${today})\n` + extra
+    extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (${source} ${today})\n` + extra
   }
   return extra
 }
@@ -952,23 +960,23 @@ async function setCNKICitations(item: Zotero.Item) {
 function setCitations(extra: string, citation_count: number, citation_count_wo_self_citations: number) {
   const today = new Date(Date.now()).toLocaleDateString('zh-CN');
   // judge whether extra has the two lines of citations
-  if (/(|.*?\n)\d+\scitations[\s\S]*?\n\d+[\s\S]*?w\/o\sself[\s\S]*?/.test(extra)) {
-    const temp = extra.match(/^\d+\scitations/mg)
+  if (/(|.*?\n)\d+\scitations?[\s\S]*?\n\d+[\s\S]*?w\/o\sself[\s\S]*?/.test(extra)) {
+    const temp = extra.match(/^\d+\scitations?/mg)
     let existingCitations;
     if (temp !== null) {
-      existingCitations = temp.map((e: any) => Number(e.replace(" citations", "")));
+      existingCitations = temp.map((e: any) => Number(e.replace(/\scitations?/g, "")));
     } else {
-      existingCitations = [0]
+      existingCitations = [0, 0]
     }
     // Zotero.debug(`existing citations:  ${existingCitations}`)
     // if the citations are different, replace the old ones 
     // if (citation_count + citation_count_wo_self_citations !== existingCitations.reduce((a, b) => a + b)) {
     if (citation_count !== existingCitations[0] || citation_count_wo_self_citations !== existingCitations[1]) {
-      extra = extra.replace(/^.*citations.*$\n/mg, "");
-      extra = `${citation_count} citations (INSPIRE ${today})\n` + `${citation_count_wo_self_citations} citations w/o self (INSPIRE ${today})\n` + extra
+      extra = extra.replace(/^.*citations?.*$\n?/mg, "");
+      extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (INSPIRE ${today})\n` + `${citation_count_wo_self_citations} ${citation_count_wo_self_citations > 1 ? " citations" : " citation"} w/o self (INSPIRE ${today})\n` + extra
     }
   } else {
-    extra = `${citation_count} citations (INSPIRE ${today})\n` + `${citation_count_wo_self_citations} citations w/o self (INSPIRE ${today})\n` + extra
+    extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (INSPIRE ${today})\n` + `${citation_count_wo_self_citations} ${citation_count_wo_self_citations > 1 ? " citations" : " citation"} w/o self (INSPIRE ${today})\n` + extra
   }
   return extra
 }
