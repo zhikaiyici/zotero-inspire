@@ -973,10 +973,10 @@ function setCitations(extra: string, citation_count: number, citation_count_wo_s
     // if (citation_count + citation_count_wo_self_citations !== existingCitations.reduce((a, b) => a + b)) {
     if (citation_count !== existingCitations[0] || citation_count_wo_self_citations !== existingCitations[1]) {
       extra = extra.replace(/^.*citations?.*$\n?/mg, "");
-      extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (INSPIRE ${today})\n` + `${citation_count_wo_self_citations} ${citation_count_wo_self_citations > 1 ? " citations" : " citation"} w/o self (INSPIRE ${today})\n` + extra
+      extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (INSPIRE ${today})\n` + `${citation_count_wo_self_citations} ${citation_count_wo_self_citations > 1 ? "citations" : "citation"} w/o self (INSPIRE ${today})\n` + extra
     }
   } else {
-    extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (INSPIRE ${today})\n` + `${citation_count_wo_self_citations} ${citation_count_wo_self_citations > 1 ? " citations" : " citation"} w/o self (INSPIRE ${today})\n` + extra
+    extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (INSPIRE ${today})\n` + `${citation_count_wo_self_citations} ${citation_count_wo_self_citations > 1 ? "citations" : "citation"} w/o self (INSPIRE ${today})\n` + extra
   }
   return extra
 }
