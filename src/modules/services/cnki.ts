@@ -14,6 +14,7 @@ function createSearchPostOptions(searchOption: SearchOption) {
     let headers;
     // SU may find more results than TI. SU %= | TI %=
     let searchExp: string;
+    searchOption.title = searchOption.title.replace(/<\/?(sub|sup|b|i|span[^>]*)>/g, "");
     if (searchOption.title.includes(" ")) {
         // 过滤掉短的主题词，可以避免出现大量无关结果
         const titleParts = searchOption.title
