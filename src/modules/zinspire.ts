@@ -52,6 +52,12 @@ export class ZInsMenu {
   static registerRightClickMenuPopup() {
     ztoolkit.Menu.register("item", {
       tag: "menuseparator",
+      isHidden: () =>
+        Zotero.getActiveZoteroPane()
+          .getSelectedItems()
+          .some((item) => {
+            return !item.isRegularItem();
+          }),
     });
     const menuIcon = `chrome://${config.addonRef}/content/icons/inspire.png`;
     ztoolkit.Menu.register("item",
@@ -82,6 +88,12 @@ export class ZInsMenu {
           },
         ],
         icon: menuIcon,
+        isHidden: () =>
+          Zotero.getActiveZoteroPane()
+            .getSelectedItems()
+            .some((item) => {
+              return !item.isRegularItem();
+            }),
       },
       // "before",
       // document.querySelector(
