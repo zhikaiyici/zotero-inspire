@@ -7,6 +7,7 @@ import {
   SaveTargetRow,
   SaveTargetSelection,
 } from "./pickerUI";
+import { searchCNKI } from "./services/cnki";
 export class ZInsUtils {
   static registerPrefs() {
     const prefOptions = {
@@ -53,6 +54,12 @@ export class ZInsMenu {
   static registerRightClickMenuPopup() {
     ztoolkit.Menu.register("item", {
       tag: "menuseparator",
+      isHidden: () =>
+        Zotero.getActiveZoteroPane()
+          .getSelectedItems()
+          .some((item) => {
+            return !item.isRegularItem();
+          }),
     });
     const menuIcon = `chrome://${config.addonRef}/content/icons/inspire.png`;
     ztoolkit.Menu.register(
@@ -84,6 +91,12 @@ export class ZInsMenu {
           },
         ],
         icon: menuIcon,
+        isHidden: () =>
+          Zotero.getActiveZoteroPane()
+            .getSelectedItems()
+            .some((item) => {
+              return !item.isRegularItem();
+            }),
       },
       // "before",
       // document.querySelector(
@@ -1529,6 +1542,7 @@ export class ZInspire {
   numberOfUpdatedItems: number;
   counter: number;
   CrossRefcounter: number;
+  CNKIcounter: number;
   error_norecid: boolean;
   error_norecid_shown: boolean;
   final_count_shown: boolean;
@@ -1540,6 +1554,7 @@ export class ZInspire {
     numberOfUpdatedItems: number = 0,
     counter: number = 0,
     CrossRefcounter: number = 0,
+    CNKIcounter: number = 0,
     error_norecid: boolean = false,
     error_norecid_shown: boolean = false,
     final_count_shown: boolean = false,
@@ -1550,6 +1565,7 @@ export class ZInspire {
     this.numberOfUpdatedItems = numberOfUpdatedItems;
     this.counter = counter;
     this.CrossRefcounter = CrossRefcounter;
+    this.CNKIcounter = CNKIcounter
     this.error_norecid = error_norecid;
     this.error_norecid_shown = error_norecid_shown;
     this.final_count_shown = final_count_shown;
@@ -1574,61 +1590,108 @@ export class ZInspire {
       this.error_norecid_shown = false;
       this.final_count_shown = false;
     } else {
-      if (this.error_norecid) {
+      // if (this.error_norecid) {
+      //   this.progressWindow.close();
+      //   const icon = "chrome://zotero/skin/cross.png";
+      //   if (this.error_norecid && !this.error_norecid_shown) {
+      //     //ztoolkit.log("hello");
+      //     const progressWindowNoRecid = new ztoolkit.ProgressWindow(
+      //       config.addonName,
+      //       { closeOnClick: true },
+      //     );
+      //     progressWindowNoRecid.changeHeadline("INSPIRE recid not found");
+      //     if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
+      //       // progressWindowNoRecid.ItemProgress.setText("No INSPIRE recid was found for some items. These have been tagged with '" + getPref("tag_norecid") + "'.")
+      //       progressWindowNoRecid.createLine({
+      //         icon: icon,
+      //         text:
+      //           "No INSPIRE recid was found for some items. These have been tagged with '" +
+      //           getPref("tag_norecid") +
+      //           "'.",
+      //       });
+      //     } else {
+      //       // progressWindowNoRecid.ItemProgress.setText("No INSPIRE recid was found for some items.")
+      //       progressWindowNoRecid.createLine({
+      //         icon: icon,
+      //         text: "No INSPIRE recid was found for some items.",
+      //       });
+      //     }
+      //     progressWindowNoRecid.show();
+      //     progressWindowNoRecid.startCloseTimer(8000);
+      //     this.error_norecid_shown = true;
+      //   }
+      // } else {
+      //   if (!this.final_count_shown) {
+      //     const icon = "chrome://zotero/skin/tick.png";
+      //     this.progressWindow = new ztoolkit.ProgressWindow(config.addonName, {
+      //       closeOnClick: true,
+      //     });
+      //     this.progressWindow.changeHeadline("Finished");
+      //     // ztoolkit.log(this.progressWindow.ItemProgress)
+      //     if (operation === "full" || operation === "noabstract") {
+      //       this.progressWindow.createLine({
+      //         text: "INSPIRE metadata updated for " + this.counter + " items.",
+      //         progress: 100,
+      //       });
+      //     } else if (operation === "citations") {
+      //       this.progressWindow.createLine({
+      //         text:
+      //           "INSPIRE citations updated for " +
+      //           this.counter +
+      //           " items;\n" +
+      //           "CrossRef citations updated for " +
+      //           this.CrossRefcounter +
+      //           " items.",
+      //         progress: 100,
+      //       });
+      //     }
+      //     this.progressWindow.show();
+      //     this.progressWindow.startCloseTimer(4000);
+      //     this.final_count_shown = true;
+      //   }
+      // }
+      const iconTick = "chrome://zotero/skin/tick.png";
+      const iconCross = "chrome://zotero/skin/cross.png";
+      if (operation != "citations") {
         this.progressWindow.close();
-        const icon = "chrome://zotero/skin/cross.png";
-        if (this.error_norecid && !this.error_norecid_shown) {
-          //ztoolkit.log("hello");
-          const progressWindowNoRecid = new ztoolkit.ProgressWindow(
-            config.addonName,
-            { closeOnClick: true },
-          );
-          progressWindowNoRecid.changeHeadline("INSPIRE recid not found");
-          if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
-            // progressWindowNoRecid.ItemProgress.setText("No INSPIRE recid was found for some items. These have been tagged with '" + getPref("tag_norecid") + "'.")
-            progressWindowNoRecid.createLine({
-              icon: icon,
-              text:
-                "No INSPIRE recid was found for some items. These have been tagged with '" +
-                getPref("tag_norecid") +
-                "'.",
-            });
-          } else {
-            // progressWindowNoRecid.ItemProgress.setText("No INSPIRE recid was found for some items.")
-            progressWindowNoRecid.createLine({
-              icon: icon,
-              text: "No INSPIRE recid was found for some items.",
-            });
-          }
-          progressWindowNoRecid.show();
-          progressWindowNoRecid.startCloseTimer(8000);
-          this.error_norecid_shown = true;
+        // const icon = "chrome://zotero/skin/cross.png";
+        //ztoolkit.log("hello");
+        const progressWindowNoRecid = new ztoolkit.ProgressWindow(config.addonName, { closeOnClick: true });
+        let unUpdated = this.toUpdate - this.counter;
+        if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
+          progressWindowNoRecid.createLine({
+            icon: unUpdated > 0 ? iconCross : iconTick,
+            text: this.toUpdate + (this.toUpdate > 1 ? " items" : " item") + " processed.\n" +
+              (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter > 1 ? " items.\n" : " item.\n") : "") +
+              (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated > 1 ? " items, which have" : " item, which has") + " been tagged with '" + getPref("tag_norecid") + "'." : "")
+          });
+        } else {
+          progressWindowNoRecid.createLine({
+            icon: unUpdated > 0 ? iconCross : iconTick,
+            text: this.toUpdate + (this.toUpdate > 1 ? " items" : " item") + " processed.\n" +
+              (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter > 1 ? " items.\n" : " item.\n") : "") +
+              (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated > 1 ? " items." : " item.") : "")
+          });
         }
+        progressWindowNoRecid.show();
+        progressWindowNoRecid.startCloseTimer(8000);
+        this.error_norecid_shown = true;
       } else {
         if (!this.final_count_shown) {
-          const icon = "chrome://zotero/skin/tick.png";
+          /// const icon = "chrome://zotero/skin/tick.png";
           this.progressWindow = new ztoolkit.ProgressWindow(config.addonName, {
             closeOnClick: true,
           });
-          this.progressWindow.changeHeadline("Finished");
-          // ztoolkit.log(this.progressWindow.ItemProgress)
-          if (operation === "full" || operation === "noabstract") {
-            this.progressWindow.createLine({
-              text: "INSPIRE metadata updated for " + this.counter + " items.",
-              progress: 100,
-            });
-          } else if (operation === "citations") {
-            this.progressWindow.createLine({
-              text:
-                "INSPIRE citations updated for " +
-                this.counter +
-                " items;\n" +
-                "CrossRef citations updated for " +
-                this.CrossRefcounter +
-                " items.",
-              progress: 100,
-            });
-          }
+          let unUpdated = this.toUpdate - this.counter - this.CrossRefcounter - this.CNKIcounter;
+          this.progressWindow.createLine({
+            icon: unUpdated > 0 ? iconCross : iconTick,
+            text: this.toUpdate + (this.toUpdate > 1 ? " items" : " item") + " processed.\n" +
+              (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter > 1 ? " items.\n" : " item.\n") : "") +
+              (this.CrossRefcounter > 0 ? "CrossRef citations updated for " + this.CrossRefcounter + (this.CrossRefcounter > 1 ? " items.\n" : " item.\n") : "") +
+              (this.CNKIcounter > 0 ? "CNKI citations updated for " + this.CNKIcounter + (this.CNKIcounter > 1 ? " items.\n" : " item.\n") : "") +
+              (unUpdated > 0 ? "No citation data was found for " + unUpdated + (unUpdated > 1 ? " items." : " item.") : ""),
+            progress: 100
+          });
           this.progressWindow.show();
           this.progressWindow.startCloseTimer(4000);
           this.final_count_shown = true;
@@ -1733,13 +1796,14 @@ export class ZInspire {
           item.removeTag(getPref("tag_norecid") as string);
           item.saveTx();
         }
-        // if (metaInspire.journalAbbreviation && (item.itemType === 'report' || item.itemType === 'preprint')) {
-        if (item.itemType === "report" || item.itemType === "preprint") {
-          item.setType(Zotero.ItemTypes.getID("journalArticle") as number);
-        }
 
-        if (item.itemType !== "book" && metaInspire.document_type == "book")
-          item.setType(Zotero.ItemTypes.getID("book") as number);
+        // // if (metaInspire.journalAbbreviation && (item.itemType === 'report' || item.itemType === 'preprint')) {
+        // if (item.itemType === "report" || item.itemType === "preprint") {
+        //   item.setType(Zotero.ItemTypes.getID("journalArticle") as number);
+        // }
+
+        // if (item.itemType !== "book" && metaInspire.document_type == "book")
+        //   item.setType(Zotero.ItemTypes.getID("book") as number);
 
         await setInspireMeta(item, metaInspire, operation);
         item.saveTx();
@@ -1765,6 +1829,14 @@ export class ZInspire {
           item.saveTx();
           if (crossref_count >= 0) {
             this.CrossRefcounter++;
+          } else {
+            if (/[\u4e00-\u9fa5]/.test(item.getField("title"))) {
+              const cnki_count = await setCNKICitations(item);
+              item.saveTx();
+              if (cnki_count > 0) {
+                this.CNKIcounter++
+              }
+            }
           }
         }
       }
@@ -2063,9 +2135,9 @@ function buildMetaFromMetadata(meta: any, operation: string) {
     if (metaAuthors?.length) {
       const authorCount = meta["author_count"] || metaAuthors.length;
       let maxAuthorCount = authorCount;
-      if (authorCount > 10) {
-        maxAuthorCount = 3;
-      }
+      // if (authorCount > 10) {
+      //   maxAuthorCount = 3;
+      // }
       for (let j = 0; j < maxAuthorCount; j++) {
         const [lastName, firstName] = metaAuthors[j].full_name.split(", ");
         creators[j] = {
@@ -2076,12 +2148,12 @@ function buildMetaFromMetadata(meta: any, operation: string) {
             : "author",
         };
       }
-      if (authorCount > 10) {
-        creators.push({
-          name: "others",
-          creatorType: "author",
-        });
-      }
+      // if (authorCount > 10) {
+      //   creators.push({
+      //     name: "others",
+      //     creatorType: "author",
+      //   });
+      // }
     } else if (metaCol) {
       for (let i = 0; i < metaCol.length; i++) {
         creators[i] = {
@@ -2151,6 +2223,31 @@ async function getCrossrefCount(item: Zotero.Item) {
   return count;
 }
 
+/**
+ * Copied and modified from https://github.com/l0o0/jasminum/blob/main/src/modules/tools.ts
+ */
+async function getCNKICount(item: Zotero.Item) {
+  let cite = "-1";
+  const searchOption = {
+    title: item.getField("title"),
+    author: item.getCreators()[0].lastName + item.getCreators()[0].firstName,
+    source: item.getField("publicationTitle"),
+  };
+  const searchResults = await searchCNKI(searchOption);
+  if (searchResults && searchResults.length > 0) {
+    for (let searchRes of searchResults) {
+      // ztoolkit.log(`searchRes.title: ${searchRes.originTitle}`);
+      // ztoolkit.log(`searchOption.title: ${searchOption.title}`);
+      if (searchRes.originTitle === searchOption.title) {
+        cite = (searchRes.citation as string) ? (searchRes.citation as string) : "-1";
+        ztoolkit.log(`CNKI citation: ${cite}`);
+        break;
+      }
+    }
+  }
+  return parseInt(cite);
+}
+
 async function setInspireMeta(
   item: Zotero.Item,
   metaInspire: jsobject,
@@ -2174,27 +2271,33 @@ async function setInspireMeta(
           metaInspire.document_type[0] === "book" &&
           item.itemType === "book"
         ) {
-          item.setField("series", metaInspire.journalAbbreviation);
+          // Set series if there is none. 2025-2-6 by zhikaiyici
+          !item.getField("series") && item.setField("series", metaInspire.journalAbbreviation);
         } else {
-          item.setField("publicationTitle", metaInspire.journalAbbreviation);
+          // Set publicationTitle if there is none. 2025-2-6 by zhikaiyici
+          !item.getField("publicationTitle") && item.setField("publicationTitle", metaInspire.journalAbbreviation);
         }
       }
       // to avoid setting undefined to zotero items
       if (metaInspire.volume) {
         if (metaInspire.document_type[0] == "book") {
-          item.setField("seriesNumber", metaInspire.volume);
+          // Set volume if there is none. 2025-2-6 by zhikaiyici
+          !item.getField("seriesNumber") && item.setField("seriesNumber", metaInspire.volume);
         } else {
-          item.setField("volume", metaInspire.volume);
+          !item.getField("volume") && item.setField("volume", metaInspire.volume);
         }
       }
       if (metaInspire.pages && metaInspire.document_type[0] !== "book") {
-        item.setField("pages", metaInspire.pages);
+        // Set pages if there is none. 2025-2-6 by zhikaiyici
+        !item.getField("pages") && item.setField("pages", metaInspire.pages);
       }
       if (metaInspire.date) {
-        item.setField("date", metaInspire.date);
+        // Set date if there is none. 2025-2-6 by zhikaiyici
+        !item.getField("date") && item.setField("date", metaInspire.date);
       }
       if (metaInspire.issue) {
-        item.setField("issue", metaInspire.issue);
+        // Set issue if there is none. 2025-2-6 by zhikaiyici
+        !item.getField("issue") && item.setField("issue", metaInspire.issue);
       }
       if (metaInspire.DOI) {
         // if (metaInspire.document_type[0] === "book") {
@@ -2202,9 +2305,11 @@ async function setInspireMeta(
           item.itemType === "journalArticle" ||
           item.itemType === "preprint"
         ) {
-          item.setField("DOI", metaInspire.DOI);
+          // Set doi if there is none. 2025-2-6 by zhikaiyici
+          !item.getField("DOI") && item.setField("DOI", metaInspire.DOI);
         } else {
-          item.setField("url", "https://doi.org/" + metaInspire.DOI);
+          // Set url if there is none. 2025-2-6 by zhikaiyici
+          !item.getField("url") && item.setField("url", "https://doi.org/" + metaInspire.DOI);
         }
       }
 
@@ -2386,7 +2491,7 @@ function setExtraCitations(extra: any, source: string, citation_count: any) {
   const today = new Date(Date.now()).toLocaleDateString("zh-CN");
 
   // Check if citation is already at the top with correct value
-  const topLineMatch = extra.match(/^(\d+)\scitations\s\([\w\s]+[\d/-]+\)\n/);
+  const topLineMatch = extra.match(/^(\d+)\scitations?\s\([\w\s]+[\d/-]+\)\n/);
 
   if (topLineMatch) {
     const topCitation = Number(topLineMatch[1]);
@@ -2398,10 +2503,10 @@ function setExtraCitations(extra: any, source: string, citation_count: any) {
   }
 
   // Extract existing citation count and date from anywhere in extra (before removing)
-  const temp = extra.match(/^\d+\scitations/gm);
+  const temp = extra.match(/^\d+\scitations?/gm);
   let existingCitation = 0;
   if (temp !== null && temp.length > 0) {
-    existingCitation = Number(temp[0].replace(" citations", ""));
+    existingCitation = Number(temp[0].replace(/ citations?/, ""));
   }
 
   // Extract existing date before removing
@@ -2409,7 +2514,7 @@ function setExtraCitations(extra: any, source: string, citation_count: any) {
   const existingDate = dateMatch ? dateMatch[1] : today;
 
   // Remove all existing citation lines (with or without trailing newline)
-  extra = extra.replace(/^.*citations.*$\n?/gm, "");
+  extra = extra.replace(/^.*citations?.*$\n?/gm, "");
 
   // Remove leading empty lines
   extra = extra.replace(/^\n+/, "");
@@ -2417,10 +2522,10 @@ function setExtraCitations(extra: any, source: string, citation_count: any) {
   // Check if only position changed (value unchanged) - reuse existing date
   if (citation_count === existingCitation) {
     // Value unchanged, keep the existing date
-    extra = `${citation_count} citations (${source} ${existingDate})\n` + extra;
+    extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (${source} ${existingDate})\n` + extra;
   } else {
     // Value changed, use today's date
-    extra = `${citation_count} citations (${source} ${today})\n` + extra;
+    extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (${source} ${today})\n` + extra;
   }
 
   return extra;
@@ -2441,6 +2546,19 @@ async function setCrossRefCitations(item: Zotero.Item) {
     count_crossref = -1;
   }
   return count_crossref;
+}
+
+async function setCNKICitations(item: Zotero.Item) {
+  let extra = item.getField('extra')
+  let count_cnki = await getCNKICount(item)
+  if (count_cnki >= 0) {
+    extra = setExtraCitations(extra, 'CNKI', count_cnki) as string
+    extra = extra.replace(/\n\n/mg, '\n')
+    item.setField('extra', extra)
+  } else {
+    count_cnki = -1
+  }
+  return count_cnki
 }
 
 function reorderExtraFields(extra: string) {
@@ -2484,7 +2602,7 @@ function setCitations(
 
   // Check if citations are already at the top with correct values
   const topLinesMatch = extra.match(
-    /^(\d+)\scitations\s\(INSPIRE\s[\d/-]+\)\n(\d+)\scitations\sw\/o\sself\s\(INSPIRE\s[\d/-]+\)\n/,
+    /^(\d+)\scitations?\s\(INSPIRE\s[\d/-]+\)\n(\d+)\scitations?\sw\/o\sself\s\(INSPIRE\s[\d/-]+\)\n/,
   );
 
   if (topLinesMatch) {
@@ -2501,11 +2619,11 @@ function setCitations(
   }
 
   // Extract existing citation counts and date from anywhere in extra (before removing)
-  const temp = extra.match(/^\d+\scitations/gm);
+  const temp = extra.match(/^\d+\scitations?/gm);
   let existingCitations: number[] = [0, 0];
   if (temp !== null && temp.length >= 2) {
     existingCitations = temp.map((e: any) =>
-      Number(e.replace(" citations", "")),
+      Number(e.replace(/ citations?/, "")),
     );
   }
 
@@ -2514,7 +2632,7 @@ function setCitations(
   const existingDate = dateMatch ? dateMatch[1] : today;
 
   // Remove all existing citation lines (with or without trailing newline)
-  extra = extra.replace(/^.*citations.*$\n?/gm, "");
+  extra = extra.replace(/^.*citations?.*$\n?/gm, "");
 
   // Remove leading empty lines
   extra = extra.replace(/^\n+/, "");
@@ -2526,14 +2644,14 @@ function setCitations(
   ) {
     // Values unchanged, keep the existing date
     extra =
-      `${citation_count} citations (INSPIRE ${existingDate})\n` +
-      `${citation_count_wo_self_citations} citations w/o self (INSPIRE ${existingDate})\n` +
+      `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (INSPIRE ${existingDate})\n` +
+      `${citation_count_wo_self_citations} ${citation_count_wo_self_citations > 1 ? "citations" : "citation"} w/o self (INSPIRE ${existingDate})\n` +
       extra;
   } else {
     // Values changed, use today's date
     extra =
-      `${citation_count} citations (INSPIRE ${today})\n` +
-      `${citation_count_wo_self_citations} citations w/o self (INSPIRE ${today})\n` +
+      `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (INSPIRE ${today})\n` +
+      `${citation_count_wo_self_citations} ${citation_count_wo_self_citations > 1 ? "citations" : "citation"} w/o self (INSPIRE ${today})\n` +
       extra;
   }
 
