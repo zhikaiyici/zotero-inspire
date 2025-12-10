@@ -5,6 +5,12 @@ export class ZInsMenu {
   static registerRightClickMenuPopup() {
     ztoolkit.Menu.register("item", {
       tag: "menuseparator",
+      isHidden: () =>
+        Zotero.getActiveZoteroPane()
+          .getSelectedItems()
+          .some((item) => {
+            return !item.isRegularItem();
+          }),
     });
     const menuIcon = `chrome://${config.addonRef}/content/icons/inspire.svg`;
     ztoolkit.Menu.register("item", {
@@ -12,6 +18,12 @@ export class ZInsMenu {
       label: getString("menupopup-label"),
       children: this.buildMenuChildren("item") as any,
       icon: menuIcon,
+      isHidden: () =>
+        Zotero.getActiveZoteroPane()
+          .getSelectedItems()
+          .some((item) => {
+            return !item.isRegularItem();
+          }),
     });
   }
 
@@ -34,9 +46,9 @@ export class ZInsMenu {
     const isItem = context === "item";
     const updateHandler = isItem
       ? (operation: string) =>
-          _globalThis.inspire.updateSelectedItems(operation)
+        _globalThis.inspire.updateSelectedItems(operation)
       : (operation: string) =>
-          _globalThis.inspire.updateSelectedCollection(operation);
+        _globalThis.inspire.updateSelectedCollection(operation);
     const cacheHandler = isItem
       ? () => _globalThis.inspire.downloadReferencesCacheForSelection()
       : () => _globalThis.inspire.downloadReferencesCacheForCollection();

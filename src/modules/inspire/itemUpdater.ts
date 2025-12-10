@@ -110,6 +110,18 @@ export class ZInspire {
           progressWindowNoRecid.show();
           progressWindowNoRecid.startCloseTimer(3000);
           this.error_norecid_shown = true;
+        } else {
+          const progressWindowFinished = new ztoolkit.ProgressWindow(
+            config.addonName,
+            { closeOnClick: true },
+          );
+          progressWindowFinished.changeHeadline("INSPIRE metadata retrieved");
+          progressWindowFinished.createLine({
+            icon: PLUGIN_ICON,
+            text: `INSPIRE metadata updated for ${this.toUpdate} ${this.toUpdate > 1 ? " items" : " item"}.`,
+          });
+          progressWindowFinished.show();
+          progressWindowFinished.startCloseTimer(3000);
         }
       } else {
         if (!this.final_count_shown) {
@@ -944,7 +956,7 @@ export async function setInspireMeta(
         item.setField("ISBN", metaInspire.isbns);
       }
       if (metaInspire.publisher && !item.getField("publisher") &&
-          (item.itemType == "book" || item.itemType == "bookSection")) {
+        (item.itemType == "book" || item.itemType == "bookSection")) {
         item.setField("publisher", metaInspire.publisher);
       }
 
