@@ -81,6 +81,7 @@ export {
   fetchInspireAbstract,
   fetchBibTeX,
   getCrossrefCount,
+  getCNKICount,
   buildMetaFromMetadata,
 } from "./metadataService";
 

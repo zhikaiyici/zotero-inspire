@@ -133,6 +133,7 @@ import {
   fetchBibTeX,
   buildMetaFromMetadata,
   getCrossrefCount,
+  getCNKICount,
   // Item updater
   ZInspire,
   setInspireMeta,

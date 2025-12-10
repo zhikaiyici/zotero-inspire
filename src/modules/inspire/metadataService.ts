@@ -8,6 +8,7 @@ import {
 import type { jsobject } from "./types";
 import { recidLookupCache } from "./apiUtils";
 import { inspireFetch } from "./rateLimiter";
+import { searchCNKI } from "./services/cnki"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INSPIRE Metadata Fetching
@@ -295,6 +296,31 @@ export async function getCrossrefCount(item: Zotero.Item): Promise<number> {
   return count;
 }
 
+/**
+ * Copied and modified from https://github.com/l0o0/jasminum/blob/main/src/modules/tools.ts
+ */
+export async function getCNKICount(item: Zotero.Item) {
+  let cite = "-1";
+  const searchOption = {
+    title: item.getField("title"),
+    author: item.getCreators()[0].lastName + item.getCreators()[0].firstName,
+    source: item.getField("publicationTitle"),
+  };
+  const searchResults = await searchCNKI(searchOption);
+  if (searchResults && searchResults.length > 0) {
+    for (let searchRes of searchResults) {
+      // ztoolkit.log(`searchRes.title: ${searchRes.originTitle}`);
+      // ztoolkit.log(`searchOption.title: ${searchOption.title}`);
+      if (searchRes.originTitle === searchOption.title) {
+        cite = (searchRes.citation as string) ? (searchRes.citation as string) : "-1";
+        ztoolkit.log(`CNKI citation: ${cite}`);
+        break;
+      }
+    }
+  }
+  return parseInt(cite);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Metadata Building
 // ─────────────────────────────────────────────────────────────────────────────
@@ -416,9 +442,9 @@ export function buildMetaFromMetadata(meta: any, operation: string): jsobject {
     if (metaAuthors?.length) {
       const authorCount = meta["author_count"] || metaAuthors.length;
       let maxAuthorCount = authorCount;
-      if (authorCount > 10) {
-        maxAuthorCount = 3;
-      }
+      // if (authorCount > 10) {
+      //   maxAuthorCount = 3;
+      // }
       for (let j = 0; j < maxAuthorCount; j++) {
         const [lastName, firstName] = metaAuthors[j].full_name.split(", ");
         creators[j] = {
@@ -429,12 +455,12 @@ export function buildMetaFromMetadata(meta: any, operation: string): jsobject {
             : "author",
         };
       }
-      if (authorCount > 10) {
-        creators.push({
-          name: "others",
-          creatorType: "author",
-        });
-      }
+      // if (authorCount > 10) {
+      //   creators.push({
+      //     name: "others",
+      //     creatorType: "author",
+      //   });
+      // }
     } else if (metaCol) {
       for (let i = 0; i < metaCol.length; i++) {
         creators[i] = {
