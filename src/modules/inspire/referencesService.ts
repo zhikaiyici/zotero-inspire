@@ -7,9 +7,7 @@ import {
   buildPublicationSummary,
   splitPublicationInfo,
 } from "./formatters";
-import {
-  extractAuthorNamesFromReference,
-} from "./authorUtils";
+import { extractAuthorNamesFromReference, extractAuthorSearchInfos } from "./authorUtils";
 import {
   buildReferenceUrl,
   buildFallbackUrl,
@@ -18,9 +16,47 @@ import {
   extractArxivFromReference,
   extractArxivFromMetadata,
 } from "./apiUtils";
-import { INSPIRE_API_BASE, AUTHOR_IDS_EXTRACT_LIMIT } from "./constants";
+import {
+  INSPIRE_API_BASE,
+  AUTHOR_IDS_EXTRACT_LIMIT,
+  API_FIELDS_ENRICHMENT,
+  buildFieldsParam,
+} from "./constants";
 import type { InspireReferenceEntry } from "./types";
+import type {
+  InspireLiteratureSearchResponse,
+  InspireReference,
+} from "./apiTypes";
 import { inspireFetch } from "./rateLimiter";
+import { LRUCache } from "./utils";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PERF-FIX-9: Memory cache for enrichment metadata (recid → metadata)
+// Prevents redundant API calls when viewing the same references multiple times
+// ─────────────────────────────────────────────────────────────────────────────
+const enrichmentMetadataCache = new LRUCache<string, any>(500);
+
+/**
+ * PERF-FIX-9: Check if cached metadata is complete enough to skip fetching.
+ * Returns true if metadata has title, authors, and citation count.
+ */
+function isMetadataComplete(metadata: any): boolean {
+  if (!metadata) return false;
+  // Must have title
+  const hasTitle =
+    Array.isArray(metadata.titles) &&
+    metadata.titles.some(
+      (t: any) => typeof t?.title === "string" && t.title.trim(),
+    );
+  // Must have authors or collaborations
+  const hasAuthors =
+    (Array.isArray(metadata.authors) && metadata.authors.length > 0) ||
+    (Array.isArray(metadata.collaborations) &&
+      metadata.collaborations.length > 0);
+  // Must have citation count
+  const hasCitationCount = typeof metadata.citation_count === "number";
+  return hasTitle && hasAuthors && hasCitationCount;
+}
 
 interface FetchReferencesOptions {
   signal?: AbortSignal;
@@ -44,8 +80,10 @@ export async function fetchReferencesEntries(
   if (!response || response.status === 404) {
     throw new Error("Reference list not found");
   }
-  const payload: any = await response.json();
-  const references = payload?.metadata?.references ?? [];
+  const payload = (await response.json()) as {
+    metadata?: { references?: InspireReference[] };
+  };
+  const references = payload.metadata?.references ?? [];
   const totalCount = references.length;
 
   const entries: InspireReferenceEntry[] = [];
@@ -55,7 +93,10 @@ export async function fetchReferencesEntries(
     if (signal?.aborted) break;
     entries.push(buildReferenceEntry(references[i], i, strings));
 
-    if (onProgress && (entries.length % BATCH_SIZE === 0 || i === totalCount - 1)) {
+    if (
+      onProgress &&
+      (entries.length % BATCH_SIZE === 0 || i === totalCount - 1)
+    ) {
       onProgress(entries, totalCount);
     }
   }
@@ -76,10 +117,8 @@ export function buildReferenceEntry(
     extractRecidFromRecordRef(referenceWrapper?.record?.["$ref"]) ||
     extractRecidFromUrls(reference?.urls);
 
-  const { names: authors, total: totalAuthors } = extractAuthorNamesFromReference(
-    reference,
-    AUTHOR_IDS_EXTRACT_LIMIT,
-  );
+  const { names: authors, total: totalAuthors } =
+    extractAuthorNamesFromReference(reference, AUTHOR_IDS_EXTRACT_LIMIT);
   const arxivDetails = extractArxivFromReference(reference);
   const resolvedYear =
     reference?.publication_info?.year?.toString() ??
@@ -95,13 +134,25 @@ export function buildReferenceEntry(
     resolvedYear,
     errata,
   );
+  // Extract primary DOI from reference data
+  const doi =
+    Array.isArray(reference?.dois) && reference.dois.length
+      ? reference.dois[0]
+      : undefined;
+  const texkey =
+    Array.isArray(reference?.texkeys) && reference.texkeys.length
+      ? reference.texkeys[0]
+      : undefined;
+
+  const cleanedTitle = cleanMathTitle(reference?.title?.title);
+
   const entry: InspireReferenceEntry = {
     id: `${index}-${recid ?? reference?.label ?? Date.now()}`,
     label: reference?.label,
     recid: recid ?? undefined,
     inspireUrl: buildReferenceUrl(reference, recid),
     fallbackUrl: buildFallbackUrl(reference, arxivDetails),
-    title: cleanMathTitle(reference?.title?.title) || strings.noTitle,
+    title: cleanedTitle || strings.noTitle,
     summary,
     year: resolvedYear ?? strings.yearUnknown,
     authors,
@@ -120,6 +171,8 @@ export function buildReferenceEntry(
     publicationInfo,
     publicationInfoErrata: errata,
     arxivDetails,
+    doi,
+    texkey,
   };
   entry.displayText = buildDisplayText(entry);
   return entry;
@@ -139,10 +192,10 @@ interface EnrichReferencesOptions {
  * This function is shared by:
  * - References panel controller (live refresh with UI updates)
  * - Background cache download (prefetchReferencesCache) for complete cache
- * 
+ *
  * Only entries with recid are enriched (others don't exist in INSPIRE).
  * Fetches: title, authors, citation count, publication info, arXiv details.
- * 
+ *
  * @param entries - Array of InspireReferenceEntry to enrich (modified in place)
  * @param options - Optional signal for cancellation and progress callback
  */
@@ -153,25 +206,54 @@ export async function enrichReferencesEntries(
   const { signal, onBatchComplete } = options;
   const strings = getCachedStrings();
 
-  // Filter entries that have recid but are missing essential metadata
-  const needsDetails = entries.filter(
-    (entry) =>
-      entry.recid &&
-      (
-        typeof entry.citationCount !== "number" ||
-        !entry.title ||
-        entry.title === strings.noTitle ||
-        !entry.authors.length ||
-        (entry.authors.length === 1 && entry.authors[0] === strings.unknownAuthor)
-      ),
-  );
+  // PERF-FIX-9: Check memory cache before adding to fetch list
+  // This prevents redundant API calls for already-cached metadata
+  const needsDetails: InspireReferenceEntry[] = [];
+  // FIX-ENRICH-CACHE: Track entries that were enriched from cache
+  // These need onBatchComplete notification for UI update
+  const cacheAppliedRecids: string[] = [];
+
+  for (const entry of entries) {
+    if (!entry.recid) continue;
+
+    // Check if entry already has all required data
+    // FTR-AUTHOR-PROFILE-FIX: Also require authorSearchInfos for author profile lookup
+    const hasAllData =
+      typeof entry.citationCount === "number" &&
+      entry.title &&
+      entry.title !== strings.noTitle &&
+      entry.authors.length > 0 &&
+      !(entry.authors.length === 1 && entry.authors[0] === strings.unknownAuthor) &&
+      Array.isArray(entry.authorSearchInfos) && entry.authorSearchInfos.length > 0;
+
+    if (hasAllData) continue;
+
+    // PERF-FIX-9: Check memory cache for this recid
+    const cachedMetadata = enrichmentMetadataCache.get(entry.recid);
+    if (cachedMetadata && isMetadataComplete(cachedMetadata)) {
+      // Apply cached data directly without network request
+      applyMetadataToEntry(entry, cachedMetadata, strings);
+      // FIX-ENRICH-CACHE: Track for UI callback notification
+      cacheAppliedRecids.push(entry.recid);
+      continue;
+    }
+
+    // Need to fetch from network
+    needsDetails.push(entry);
+  }
+
+  // FIX-ENRICH-CACHE: Notify UI for entries enriched from cache
+  // This ensures UI updates even when no network requests are made
+  if (cacheAppliedRecids.length && onBatchComplete) {
+    onBatchComplete(cacheAppliedRecids);
+  }
 
   if (!needsDetails.length || signal?.aborted) {
     return;
   }
 
   Zotero.debug(
-    `[${config.addonName}] Enriching ${needsDetails.length} reference entries`
+    `[${config.addonName}] Enriching ${needsDetails.length} reference entries`,
   );
 
   const { batchSize, parallelBatches } = getEnrichmentSettings();
@@ -208,12 +290,12 @@ export async function enrichReferencesEntries(
         if (processed.length && onBatchComplete) {
           onBatchComplete(processed);
         }
-      })
+      }),
     );
   }
 
   Zotero.debug(
-    `[${config.addonName}] Enrichment completed for ${needsDetails.length} entries`
+    `[${config.addonName}] Enrichment completed for ${needsDetails.length} entries`,
   );
 }
 
@@ -228,24 +310,32 @@ async function fetchAndApplyBatchMetadata(
 ): Promise<string[]> {
   if (signal?.aborted || !batchRecids.length) return [];
 
-  const query = batchRecids.map(r => `recid:${r}`).join(" OR ");
-  const fieldsParam = "&fields=control_number,citation_count,citation_count_without_self_citations,titles.title,authors.full_name,author_count,publication_info,earliest_date,arxiv_eprints";
+  const query = batchRecids.map((r) => `recid:${r}`).join(" OR ");
+  // FTR-API-FIELD-OPTIMIZATION: Use centralized field configuration
+  const fieldsParam = buildFieldsParam(API_FIELDS_ENRICHMENT);
   const url = `${INSPIRE_API_BASE}/literature?q=${encodeURIComponent(query)}&size=${batchRecids.length}${fieldsParam}`;
 
   try {
-    const response = await inspireFetch(url, signal ? { signal } : undefined).catch(() => null);
+    const response = await inspireFetch(
+      url,
+      signal ? { signal } : undefined,
+    ).catch(() => null);
     if (!response) {
-      Zotero.debug(`[${config.addonName}] enrich batch failed: no response (recids=${batchRecids.slice(0, 5).join(",")}${batchRecids.length > 5 ? "..." : ""})`);
+      Zotero.debug(
+        `[${config.addonName}] enrich batch failed: no response (recids=${batchRecids.slice(0, 5).join(",")}${batchRecids.length > 5 ? "..." : ""})`,
+      );
       return [];
     }
     if (response.status !== 200) {
       Zotero.debug(
-        `[${config.addonName}] enrich batch HTTP ${response.status} (recids=${batchRecids.slice(0, 5).join(",")}${batchRecids.length > 5 ? "..." : ""})`
+        `[${config.addonName}] enrich batch HTTP ${response.status} (recids=${batchRecids.slice(0, 5).join(",")}${batchRecids.length > 5 ? "..." : ""})`,
       );
       return [];
     }
 
-    const payload: any = await response.json();
+    const payload = (await response.json()) as unknown as
+      | InspireLiteratureSearchResponse
+      | null;
     const hits = payload?.hits?.hits ?? [];
     const processedRecids: string[] = [];
 
@@ -255,6 +345,11 @@ async function fetchAndApplyBatchMetadata(
       const metadata = hit?.metadata ?? {};
 
       if (!recid) continue;
+
+      // PERF-FIX-9: Cache metadata for future lookups
+      if (isMetadataComplete(metadata)) {
+        enrichmentMetadataCache.set(recid, metadata);
+      }
 
       const matchingEntries = recidToEntry.get(recid);
       if (!matchingEntries) continue;
@@ -267,7 +362,9 @@ async function fetchAndApplyBatchMetadata(
     return processedRecids;
   } catch (err) {
     if ((err as any)?.name !== "AbortError") {
-      Zotero.debug(`[${config.addonName}] Error fetching batch metadata: ${err}`);
+      Zotero.debug(
+        `[${config.addonName}] Error fetching batch metadata: ${err}`,
+      );
     }
   }
   return [];
@@ -289,19 +386,38 @@ function applyMetadataToEntry(
     entry.citationCount = metadata.citation_count;
   }
   if (typeof metadata.citation_count_without_self_citations === "number") {
-    entry.citationCountWithoutSelf = metadata.citation_count_without_self_citations;
+    entry.citationCountWithoutSelf =
+      metadata.citation_count_without_self_citations;
   }
 
   // Title update
-  if (
-    (!entry.title || entry.title === strings.noTitle) &&
-    Array.isArray(metadata.titles)
-  ) {
+  // FIX: Also update title if current title appears truncated (ends with space or is very short)
+  // INSPIRE's references API truncates titles at LaTeX $ characters
+  // Detect truncation by checking:
+  // - Title ends with space (common truncation artifact)
+  // - Title ends with dash/hyphen (e.g., "high-" before "$p_T$")
+  // - Title is very short (< 20 chars)
+  const currentTitleTruncated = entry.title &&
+    entry.title !== strings.noTitle &&
+    (entry.title.endsWith(" ") ||
+     entry.title.endsWith("-") ||
+     entry.title.endsWith("—") ||
+     entry.title.length < 20);
+  const shouldUpdateTitle = !entry.title ||
+    entry.title === strings.noTitle ||
+    currentTitleTruncated;
+
+  if (shouldUpdateTitle && Array.isArray(metadata.titles)) {
     const titleObj = metadata.titles.find(
       (item: any) => typeof item?.title === "string" && item.title.trim(),
     );
     if (titleObj?.title) {
-      entry.title = cleanMathTitle(titleObj.title);
+      const newTitle = cleanMathTitle(titleObj.title);
+      // Only update if new title is longer (more complete)
+      if (!entry.title || entry.title === strings.noTitle ||
+          newTitle.length > entry.title.length) {
+        entry.title = newTitle;
+      }
     }
   }
 
@@ -321,6 +437,56 @@ function applyMetadataToEntry(
       entry.authors = authors.slice(0, AUTHOR_IDS_EXTRACT_LIMIT);
       entry.authorText = formatAuthors(entry.authors, entry.totalAuthors);
     }
+  } else if (
+    // Fix for large collaborations: INSPIRE API truncates authors in references
+    // field, causing totalAuthors to be incorrect. Update when metadata has
+    // higher author_count than current totalAuthors (e.g., 67 vs 1).
+    typeof metadata.author_count === "number" &&
+    metadata.author_count > (entry.totalAuthors ?? 0)
+  ) {
+    entry.totalAuthors = metadata.author_count;
+    entry.authorText = formatAuthors(entry.authors, entry.totalAuthors);
+  }
+
+  // Extract authorSearchInfos for author profile lookup (FTR-AUTHOR-PROFILE)
+  // This allows References tab authors to have recid/BAI for precise profile queries
+  // FTR-AUTHOR-PROFILE-FIX-2: ALWAYS rebuild entry.authors from metadata.authors to ensure
+  // index alignment with authorSearchInfos. This is critical because:
+  // - Reference data may have different author ordering/naming than literature metadata
+  // - extractAuthorNamesFromReference skips authors without names (no placeholders)
+  // - extractAuthorSearchInfos pushes placeholders to maintain alignment
+  // By rebuilding both from the same source (metadata.authors), we guarantee alignment.
+  if (
+    !entry.authorSearchInfos &&
+    Array.isArray(metadata.authors) &&
+    metadata.authors.length > 0
+  ) {
+    const searchInfos = extractAuthorSearchInfos(
+      metadata.authors,
+      AUTHOR_IDS_EXTRACT_LIMIT,
+    );
+    if (searchInfos?.length) {
+      entry.authorSearchInfos = searchInfos;
+      // FTR-AUTHOR-PROFILE-FIX-2: Rebuild entry.authors from same source to ensure alignment
+      // Extract author names from the same metadata.authors array used for searchInfos
+      const alignedAuthors: string[] = [];
+      const limit = Math.min(metadata.authors.length, AUTHOR_IDS_EXTRACT_LIMIT);
+      for (let i = 0; i < limit; i++) {
+        const author = metadata.authors[i];
+        const name = author?.full_name || author?.full_name_unicode_normalized || "";
+        alignedAuthors.push(name); // Push even if empty to maintain alignment
+      }
+      // Only update if we got meaningful names (not all empty)
+      const hasRealNames = alignedAuthors.some((n) => n.trim());
+      if (hasRealNames) {
+        entry.authors = alignedAuthors;
+        entry.totalAuthors =
+          typeof metadata.author_count === "number"
+            ? metadata.author_count
+            : metadata.authors.length;
+        entry.authorText = formatAuthors(entry.authors, entry.totalAuthors);
+      }
+    }
   }
 
   // Year update
@@ -337,6 +503,17 @@ function applyMetadataToEntry(
     if (arxiv) {
       entry.arxivDetails = arxiv;
     }
+  }
+
+  // Extract DOI from metadata if not already present
+  if (!entry.doi && Array.isArray(metadata.dois) && metadata.dois.length) {
+    const doiObj = metadata.dois[0];
+    entry.doi = typeof doiObj === "string" ? doiObj : doiObj?.value;
+  }
+
+  // Extract texkey from metadata if not already present
+  if (!entry.texkey && Array.isArray(metadata.texkeys) && metadata.texkeys.length) {
+    entry.texkey = metadata.texkeys[0];
   }
 
   // Publication summary update
@@ -361,4 +538,3 @@ function applyMetadataToEntry(
   // Invalidate searchText so it will be recalculated on next filter
   entry.searchText = "";
 }
-

@@ -2,7 +2,23 @@ import { config } from "../package.json";
 import { initLocale, getString } from "./utils/locale";
 import { createZToolkit } from "./utils/ztoolkit";
 import { ZInsMenu, ZInsUtils, ZInspireReferencePane } from "./modules/zinspire";
-import { localCache, getReaderIntegration } from "./modules/inspire";
+import {
+  localCache,
+  getReaderIntegration,
+  recidLookupCache,
+  MemoryMonitor,
+  findUnpublishedPreprints,
+  batchCheckPublicationStatus,
+  buildCheckSummary,
+  shouldRunBackgroundCheck,
+  updateLastCheckTime,
+  trackPreprintCandidates,
+  cleanupLegacyPreprintFiles,
+  createAbortController,
+  onRenderModeChange,
+  deriveRecidFromItem,
+  clearFundingCache,
+} from "./modules/inspire";
 import {
   ENRICH_BATCH_RANGE,
   ENRICH_PARALLEL_RANGE,
@@ -10,6 +26,11 @@ import {
 } from "./modules/inspire/enrichConfig";
 import { getPref, setPref } from "./utils/prefs";
 import { registerPrefsScripts } from "./modules/prefScript";
+
+// Track background timers for cleanup on shutdown (PERF-FIX-1)
+let purgeTimer: ReturnType<typeof setTimeout> | undefined;
+let preprintCheckTimer: ReturnType<typeof setTimeout> | undefined;
+let preprintCheckController: AbortController | undefined;
 
 async function onStartup() {
   await Promise.all([
@@ -22,14 +43,120 @@ async function onStartup() {
   ZInsUtils.registerPrefs();
   ZInsUtils.registerNotifier();
 
+  // Initialize new preference defaults for existing installations (FTR-FUNDING-EXTRACTION)
+  if (getPref("funding_china_only") === undefined) {
+    setPref("funding_china_only", true);
+  }
+
   await onMainWindowLoad(Zotero.getMainWindow());
 
-  // Purge expired local cache entries in background after startup
-  setTimeout(() => {
-    localCache.purgeExpired().catch(err => {
-      Zotero.debug(`[${config.addonName}] Failed to purge expired cache: ${err}`);
+  // Register LRU caches for monitoring
+  MemoryMonitor.getInstance().registerCache("recidLookup", recidLookupCache);
+
+  // Expose console commands for debugging
+  exposeConsoleCommands();
+
+  // Purge expired local cache entries in background after startup (PERF-FIX-1: tracked timer)
+  purgeTimer = setTimeout(() => {
+    localCache.purgeExpired().catch((err) => {
+      Zotero.debug(
+        `[${config.addonName}] Failed to purge expired cache: ${err}`,
+      );
     });
   }, 10000); // Delay 10s to avoid startup contention
+
+  // FTR-PREPRINT-WATCH: Background preprint check on startup/daily (PERF-FIX-1: tracked timer)
+  preprintCheckTimer = setTimeout(() => {
+    runBackgroundPreprintCheck();
+  }, 30000); // Delay 30s to avoid startup contention
+}
+
+/**
+ * Expose debug commands on Zotero[addonInstance] for console access.
+ * Usage in Zotero console:
+ *   Zotero.ZoteroInspire.getCacheStats()
+ *   Zotero.ZoteroInspire.logCacheStats()
+ *   Zotero.ZoteroInspire.resetCacheStats()
+ */
+function exposeConsoleCommands(): void {
+  const instance = (Zotero as any)[config.addonInstance];
+  if (instance) {
+    instance.getCacheStats = () => MemoryMonitor.getInstance().getCacheStats();
+    instance.logCacheStats = () => MemoryMonitor.getInstance().logCacheStats();
+    instance.resetCacheStats = () =>
+      MemoryMonitor.getInstance().resetCacheStats();
+    instance.startMemoryMonitor = (interval?: number) =>
+      MemoryMonitor.getInstance().start(interval);
+    instance.stopMemoryMonitor = () => MemoryMonitor.getInstance().stop();
+  }
+}
+
+/**
+ * FTR-PREPRINT-WATCH: Run background preprint check based on preferences.
+ * Non-interactive, only shows notification if publications found.
+ */
+async function runBackgroundPreprintCheck(): Promise<void> {
+  // Abort previous background check if still running
+  preprintCheckController?.abort();
+  preprintCheckController = createAbortController();
+  const signal = preprintCheckController?.signal;
+
+  try {
+    // Check if preprint watch is enabled
+    const enabled = getPref("preprint_watch_enabled" as any) as boolean;
+    if (!enabled) {
+      Zotero.debug(
+        `[${config.addonName}] Preprint watch disabled, skipping background check`,
+      );
+      return;
+    }
+
+    // Check if we should run based on timing preference
+    if (!shouldRunBackgroundCheck()) {
+      return;
+    }
+
+    Zotero.debug(`[${config.addonName}] Starting background preprint check`);
+
+    // Update last check time
+    updateLastCheckTime();
+
+    // Find unpublished preprints in library
+    const preprints = await findUnpublishedPreprints(undefined, undefined, {
+      signal,
+    });
+    if (signal?.aborted) return;
+    if (preprints.length === 0) {
+      Zotero.debug(
+        `[${config.addonName}] No unpublished preprints found in library`,
+      );
+      return;
+    }
+
+    Zotero.debug(
+      `[${config.addonName}] Found ${preprints.length} unpublished preprints, checking INSPIRE...`,
+    );
+
+    // Check publication status (updates unified cache internally)
+    const results = await batchCheckPublicationStatus(preprints, { signal });
+    if (signal?.aborted) return;
+    const summary = buildCheckSummary(results);
+
+    // If publications found, show results dialog for user to review and update
+    if (summary.published > 0) {
+      // Show results dialog through ZInspire instance
+      // This allows user to select which items to update
+      await _globalThis.inspire.showBackgroundPreprintResults(results);
+    }
+
+    Zotero.debug(
+      `[${config.addonName}] Background preprint check completed: ${summary.published} published, ${summary.unpublished} unpublished, ${summary.errors} errors`,
+    );
+  } catch (err) {
+    Zotero.debug(
+      `[${config.addonName}] Background preprint check failed: ${err}`,
+    );
+  }
 }
 
 async function onMainWindowLoad(_win: Window): Promise<void> {
@@ -37,8 +164,6 @@ async function onMainWindowLoad(_win: Window): Promise<void> {
   addon.data.ztoolkit = createZToolkit();
 
   ZInspireReferencePane.registerPanel();
-
-  // UIExampleFactory.registerRightClickMenuItem();
 
   ZInsMenu.registerRightClickMenuPopup();
   ZInsMenu.registerRightClickCollectionMenu();
@@ -53,6 +178,21 @@ async function onMainWindowUnload(_win: Window): Promise<void> {
 }
 
 function onShutdown(): void {
+  // PERF-FIX-1: Clear tracked timers before shutdown
+  if (purgeTimer) {
+    clearTimeout(purgeTimer);
+    purgeTimer = undefined;
+  }
+  if (preprintCheckTimer) {
+    clearTimeout(preprintCheckTimer);
+    preprintCheckTimer = undefined;
+  }
+  preprintCheckController?.abort();
+  preprintCheckController = undefined;
+
+  // PERF-FIX-2: Stop MemoryMonitor interval if running
+  MemoryMonitor.getInstance().stop();
+
   ztoolkit.unregisterAll();
   addon.data.dialog?.window?.close();
   ZInspireReferencePane.unregisterPanel();
@@ -74,25 +214,61 @@ function onShutdown(): void {
  */
 async function onNotify(
   event: string,
-  type: string,
+  _type: string,
   ids: Array<any>,
-  extraData: { [key: string]: any },
+  _extraData: { [key: string]: any },
 ) {
   // You can add your code to the corresponding notify type
-  // ztoolkit.log("notify", event, type, ids, extraData);
   if (event === "add") {
+    // Filter to only regular items - skip annotations, attachments, notes
+    // PDF annotations trigger 'add' events but should not initiate INSPIRE lookups
+    const allItems = Zotero.Items.get(ids);
+    const regularItems = allItems.filter(
+      (item: Zotero.Item) => item && item.isRegularItem(),
+    );
+    if (regularItems.length === 0) {
+      return;
+    }
+
+    // Track potential preprint candidates to avoid full-library rescans later
+    trackPreprintCandidates(regularItems).catch((err) => {
+      Zotero.debug(
+        `[${config.addonName}] Failed to track preprint candidates: ${err}`,
+      );
+    });
+
+    // FIX-DUPLICATE-NOTE: Skip items that already have an INSPIRE recid
+    // These were just imported from INSPIRE panel and don't need auto-update
+    // This prevents duplicate note creation due to race condition between
+    // panel import and onNotify auto-update
+    const itemsNeedingUpdate = regularItems.filter(
+      (item: Zotero.Item) => !deriveRecidFromItem(item),
+    );
+    if (itemsNeedingUpdate.length === 0) {
+      return;
+    }
+
     switch (getPref("meta")) {
       case "full":
-        _globalThis.inspire.updateItems(Zotero.Items.get(ids), "full");
+        _globalThis.inspire.updateItems(itemsNeedingUpdate, "full");
         break;
       case "noabstract":
-        _globalThis.inspire.updateItems(Zotero.Items.get(ids), "noabstract");
+        _globalThis.inspire.updateItems(itemsNeedingUpdate, "noabstract");
         break;
       case "citations":
-        _globalThis.inspire.updateItems(Zotero.Items.get(ids), "citations");
+        _globalThis.inspire.updateItems(itemsNeedingUpdate, "citations");
         break;
       default:
         break;
+    }
+  }
+
+  // Clear funding cache when items are deleted to prevent memory leaks
+  if (event === "delete") {
+    for (const id of ids) {
+      if (typeof id === "number") {
+        clearFundingCache(id);
+      }
     }
   }
   return;
@@ -102,14 +278,17 @@ async function onNotify(
  * Update cache statistics display in preferences panel.
  */
 async function updateCacheStatsDisplay(doc: Document) {
-  const statsEl = doc.getElementById("zotero-prefpane-zoteroinspire-cache_stats");
+  const statsEl = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-cache_stats",
+  );
   if (statsEl) {
     const stats = await localCache.getStats();
-    const sizeStr = stats.totalSize < 1024
-      ? `${stats.totalSize} B`
-      : stats.totalSize < 1024 * 1024
-        ? `${(stats.totalSize / 1024).toFixed(1)} KB`
-        : `${(stats.totalSize / 1024 / 1024).toFixed(1)} MB`;
+    const sizeStr =
+      stats.totalSize < 1024
+        ? `${stats.totalSize} B`
+        : stats.totalSize < 1024 * 1024
+          ? `${(stats.totalSize / 1024).toFixed(1)} KB`
+          : `${(stats.totalSize / 1024 / 1024).toFixed(1)} MB`;
     statsEl.textContent = getString("pref-local-cache-stats", {
       args: { count: stats.fileCount, size: sizeStr },
     });
@@ -118,15 +297,15 @@ async function updateCacheStatsDisplay(doc: Document) {
 
 function updateEnrichSettingsDisplay(doc: Document, forceValueSync = false) {
   const infoEl = doc.getElementById(
-    "zotero-prefpane-zoteroinspire-local_cache_enrich_info"
+    "zotero-prefpane-zoteroinspire-local_cache_enrich_info",
   );
   if (!infoEl) return;
 
   const batchInput = doc.getElementById(
-    "zotero-prefpane-zoteroinspire-local_cache_enrich_batch"
+    "zotero-prefpane-zoteroinspire-local_cache_enrich_batch",
   ) as HTMLInputElement | null;
   const parallelInput = doc.getElementById(
-    "zotero-prefpane-zoteroinspire-local_cache_enrich_parallel"
+    "zotero-prefpane-zoteroinspire-local_cache_enrich_parallel",
   ) as HTMLInputElement | null;
   const settings = getEnrichmentSettings();
 
@@ -174,7 +353,7 @@ function parseInputWithFallback(
 
 function updateLocalCacheControls(doc: Document, syncCheckbox = true) {
   const enableCheckbox = doc.getElementById(
-    "zotero-prefpane-zoteroinspire-local_cache_enable"
+    "zotero-prefpane-zoteroinspire-local_cache_enable",
   ) as HTMLInputElement | null;
   let enabled = getPref("local_cache_enable") as boolean;
   if (enableCheckbox) {
@@ -198,7 +377,9 @@ function updateLocalCacheControls(doc: Document, syncCheckbox = true) {
     "zotero-prefpane-zoteroinspire-clear_cache",
   ];
   controlIds.forEach((id) => {
-    const el = doc.getElementById(id) as (HTMLInputElement | HTMLButtonElement | HTMLElement) | null;
+    const el = doc.getElementById(id) as
+      | (HTMLInputElement | HTMLButtonElement | HTMLElement)
+      | null;
     if (!el || el === enableCheckbox) return;
     if ("disabled" in el) {
       (el as HTMLInputElement | HTMLButtonElement).disabled = !enabled;
@@ -206,6 +387,198 @@ function updateLocalCacheControls(doc: Document, syncCheckbox = true) {
       el.classList.toggle("disabled", !enabled);
     }
   });
+}
+
+function updatePDFParseControls(doc: Document, syncCheckbox = true) {
+  const parseCheckbox = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-pdf_parse_refs_list",
+  ) as HTMLInputElement | null;
+  const forceCheckbox = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-pdf_force_mapping_on_mismatch",
+  ) as HTMLInputElement | null;
+
+  let parseEnabled = getPref("pdf_parse_refs_list") === true;
+  if (parseCheckbox) {
+    if (syncCheckbox) {
+      parseCheckbox.checked = parseEnabled;
+    } else {
+      parseEnabled = parseCheckbox.checked;
+      setPref("pdf_parse_refs_list", parseEnabled);
+    }
+  }
+
+  if (forceCheckbox) {
+    const forcePref = getPref("pdf_force_mapping_on_mismatch") !== false;
+    forceCheckbox.disabled = !parseEnabled;
+    if (parseEnabled) {
+      forceCheckbox.checked = forcePref;
+    } else {
+      // keep stored pref, but visually unchecked when disabled
+      forceCheckbox.checked = false;
+    }
+  }
+}
+
+function updateSmartUpdateControls(doc: Document, syncCheckbox = true) {
+  const enableCheckbox = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-smart_update_enable",
+  ) as HTMLInputElement | null;
+
+  let enabled = getPref("smart_update_enable") as boolean;
+  if (enableCheckbox) {
+    if (syncCheckbox) {
+      enableCheckbox.checked = enabled;
+    } else {
+      enabled = enableCheckbox.checked;
+      setPref("smart_update_enable", enabled);
+    }
+  }
+
+  // Sub-options that should be disabled when smart update is off
+  const subControlIds = [
+    "zotero-prefpane-zoteroinspire-smart_update_show_preview",
+    "zotero-prefpane-zoteroinspire-smart_update_protect_title",
+    "zotero-prefpane-zoteroinspire-smart_update_protect_authors",
+    "zotero-prefpane-zoteroinspire-smart_update_protect_abstract",
+    "zotero-prefpane-zoteroinspire-smart_update_protect_journal",
+    "zotero-prefpane-zoteroinspire-smart_update_always_citations",
+    "zotero-prefpane-zoteroinspire-smart_update_always_arxiv",
+  ];
+
+  subControlIds.forEach((id) => {
+    const el = doc.getElementById(id) as HTMLInputElement | null;
+    if (!el) return;
+    el.disabled = !enabled;
+  });
+}
+
+/**
+ * Update Collaboration Tags controls.
+ * - collab_tag_enable: main toggle (must be on for sub-options to work)
+ * - collab_tag_auto: auto-apply toggle
+ * - collab_tag_template: template input
+ *
+ * When disabled, sub-options are grayed out and non-interactive.
+ * Template input shows placeholder when empty (not "undefined").
+ */
+function updateCollabTagControls(doc: Document, syncCheckbox = true) {
+  const enableCheckbox = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-collab_tag_enable",
+  ) as HTMLInputElement | null;
+
+  // Read current state - either from pref (on load) or from checkbox (on user click)
+  // Note: Zotero's preference binding auto-syncs checkbox to pref on user click,
+  // so we just need to read the current state, not set it again
+  const enabled = syncCheckbox
+    ? (getPref("collab_tag_enable") as boolean)
+    : (enableCheckbox?.checked ?? false);
+
+  if (enableCheckbox && syncCheckbox) {
+    enableCheckbox.checked = enabled;
+  }
+
+  // Sub-options that should be disabled when collab tags is off
+  const subControlIds = [
+    "zotero-prefpane-zoteroinspire-collab_tag_auto",
+    "zotero-prefpane-zoteroinspire-collab_tag_template",
+  ];
+
+  subControlIds.forEach((id) => {
+    const el = doc.getElementById(id) as HTMLInputElement | null;
+    if (!el) return;
+    el.disabled = !enabled;
+  });
+
+  // Handle template input: ensure "undefined" is not displayed, show placeholder instead
+  const templateInput = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-collab_tag_template",
+  ) as HTMLInputElement | null;
+  if (templateInput) {
+    const templateValue = getPref("collab_tag_template") as string;
+    // If value is undefined, null, or "undefined" string, clear it and show placeholder
+    if (
+      templateValue === undefined ||
+      templateValue === null ||
+      templateValue === "undefined"
+    ) {
+      templateInput.value = "";
+    }
+  }
+}
+
+/**
+ * Update LaTeX sub-option visibility based on meta preference.
+ * LaTeX rendering is only meaningful when fetching abstracts ("full").
+ */
+function updateLatexOptionsVisibility(doc: Document) {
+  const latexContainer = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-latex_options",
+  ) as HTMLElement | null;
+  const metaRadiogroup = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-meta",
+  ) as any;
+
+  if (!latexContainer) return;
+
+  // Get current meta preference value
+  const metaValue = metaRadiogroup?.value ?? getPref("meta");
+  const showLatex = metaValue === "full";
+
+  // Show/hide the LaTeX options container
+  latexContainer.style.display = showLatex ? "" : "none";
+
+  // Also disable the menulist when hidden to prevent accidental changes
+  const latexMenulist = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-latex_render_mode",
+  ) as HTMLSelectElement | null;
+  if (latexMenulist) {
+    latexMenulist.disabled = !showLatex;
+  }
+}
+
+/**
+ * Update Preprint Watch controls.
+ * - preprint_watch_enabled: main toggle (must be on for sub-options to work)
+ * - on_startup checkbox: whether to check on startup (once per day)
+ * - notify checkbox: whether to show notification
+ *
+ * Mapping for auto_check:
+ * - checkbox checked → pref = "daily" (check once per day on first startup)
+ * - checkbox unchecked → pref = "never" (manual only)
+ */
+function updatePreprintWatchControls(doc: Document, syncFromPref = true) {
+  const enabledCheckbox = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-preprint_watch_enabled",
+  ) as HTMLInputElement | null;
+  const onStartupCheckbox = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-preprint_watch_on_startup",
+  ) as HTMLInputElement | null;
+  const notifyCheckbox = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-preprint_watch_notify",
+  ) as HTMLInputElement | null;
+
+  if (!enabledCheckbox || !onStartupCheckbox) return;
+
+  // Get main toggle state
+  const mainEnabled = enabledCheckbox.checked;
+
+  // Disable sub-options when main toggle is off
+  onStartupCheckbox.disabled = !mainEnabled;
+  if (notifyCheckbox) {
+    notifyCheckbox.disabled = !mainEnabled;
+  }
+
+  if (syncFromPref) {
+    // Initialize checkbox from pref value
+    const autoCheck = getPref("preprint_watch_auto_check" as any) as string;
+    // Both "startup" and "daily" mean the checkbox should be checked
+    // We treat them the same now (always limit to once per day)
+    onStartupCheckbox.checked = autoCheck !== "never";
+  } else {
+    // Update pref from checkbox state
+    const newValue = onStartupCheckbox.checked ? "daily" : "never";
+    setPref("preprint_watch_auto_check" as any, newValue);
+  }
 }
 
 /**
@@ -225,18 +598,76 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
         updateEnrichSettingsDisplay(doc, true);
         setTimeout(() => updateEnrichSettingsDisplay(doc, true), 50);
         updateLocalCacheControls(doc);
+        updatePDFParseControls(doc);
+        updateSmartUpdateControls(doc);
+        updatePreprintWatchControls(doc);
+        updateCollabTagControls(doc);
+        updateLatexOptionsVisibility(doc);
         const enableCheckbox = doc.getElementById(
-          "zotero-prefpane-zoteroinspire-local_cache_enable"
+          "zotero-prefpane-zoteroinspire-local_cache_enable",
         ) as HTMLInputElement | null;
         enableCheckbox?.addEventListener("command", () => {
           updateLocalCacheControls(doc, false);
           updateEnrichSettingsDisplay(doc, true);
         });
+        const parseCheckbox = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-pdf_parse_refs_list",
+        ) as HTMLInputElement | null;
+        parseCheckbox?.addEventListener("command", () => {
+          updatePDFParseControls(doc, false);
+        });
+        // Meta radiogroup listener - update LaTeX options visibility
+        const metaRadiogroup = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-meta",
+        );
+        metaRadiogroup?.addEventListener("command", () => {
+          updateLatexOptionsVisibility(doc);
+        });
+        const latexModeRadio = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-latex_render_mode",
+        );
+        latexModeRadio?.addEventListener("command", () => {
+          onRenderModeChange();
+        });
+        const forceCheckbox = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-pdf_force_mapping_on_mismatch",
+        ) as HTMLInputElement | null;
+        forceCheckbox?.addEventListener("command", (e) => {
+          const cb = e.target as HTMLInputElement;
+          setPref("pdf_force_mapping_on_mismatch", cb.checked);
+        });
+        // Smart Update enable checkbox listener
+        const smartUpdateCheckbox = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-smart_update_enable",
+        ) as HTMLInputElement | null;
+        smartUpdateCheckbox?.addEventListener("command", () => {
+          updateSmartUpdateControls(doc, false);
+        });
+        // Preprint Watch checkbox listeners
+        const preprintEnabledCheckbox = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-preprint_watch_enabled",
+        ) as HTMLInputElement | null;
+        const preprintOnStartupCheckbox = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-preprint_watch_on_startup",
+        ) as HTMLInputElement | null;
+        preprintEnabledCheckbox?.addEventListener("command", () => {
+          updatePreprintWatchControls(doc, true); // sync from pref, update disabled state
+        });
+        preprintOnStartupCheckbox?.addEventListener("command", () => {
+          updatePreprintWatchControls(doc, false);
+        });
+        // Collab Tags enable checkbox listener
+        const collabTagCheckbox = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-collab_tag_enable",
+        ) as HTMLInputElement | null;
+        collabTagCheckbox?.addEventListener("command", () => {
+          updateCollabTagControls(doc, false);
+        });
         const batchInput = doc.getElementById(
-          "zotero-prefpane-zoteroinspire-local_cache_enrich_batch"
+          "zotero-prefpane-zoteroinspire-local_cache_enrich_batch",
         ) as HTMLInputElement | null;
         const parallelInput = doc.getElementById(
-          "zotero-prefpane-zoteroinspire-local_cache_enrich_parallel"
+          "zotero-prefpane-zoteroinspire-local_cache_enrich_parallel",
         ) as HTMLInputElement | null;
         const refresh = () => updateEnrichSettingsDisplay(doc);
         batchInput?.addEventListener("input", refresh);
@@ -244,13 +675,13 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
         // Show current cache directory (actual path being used)
         localCache.getCacheDir().then((dir) => {
           const input = doc.getElementById(
-            "zotero-prefpane-zoteroinspire-local_cache_custom_dir"
+            "zotero-prefpane-zoteroinspire-local_cache_custom_dir",
           ) as HTMLInputElement;
           if (input && dir) {
             const customDir = getPref("local_cache_custom_dir") as string;
             input.value = customDir || "";
-            input.placeholder = dir;  // Show actual path being used
-            input.title = dir;  // Full path in tooltip
+            input.placeholder = dir; // Show actual path being used
+            input.title = dir; // Full path in tooltip
           }
         });
       }
@@ -261,12 +692,17 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       if (data.window) {
         const win = data.window as Window;
         const doc = win.document;
-        const button = doc.getElementById("zotero-prefpane-zoteroinspire-clear_history");
+        const button = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-clear_history",
+        );
         if (button) {
           const originalLabel = button.getAttribute("data-l10n-id");
           button.setAttribute("data-l10n-id", "pref-search-history-cleared");
           setTimeout(() => {
-            button.setAttribute("data-l10n-id", originalLabel || "pref-search-history-clear");
+            button.setAttribute(
+              "data-l10n-id",
+              originalLabel || "pref-search-history-clear",
+            );
           }, 2000);
         }
       }
@@ -277,14 +713,21 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
         if (data.window) {
           const win = data.window as Window;
           const doc = win.document;
-          const button = doc.getElementById("zotero-prefpane-zoteroinspire-clear_cache");
+          const button = doc.getElementById(
+            "zotero-prefpane-zoteroinspire-clear_cache",
+          );
           if (button) {
             const originalLabel = button.getAttribute("data-l10n-id");
             // Use fluent for the cleared message
-            button.textContent = getString("pref-local-cache-cleared", { args: { count } });
+            button.textContent = getString("pref-local-cache-cleared", {
+              args: { count },
+            });
             setTimeout(() => {
-              button.setAttribute("data-l10n-id", originalLabel || "pref-local-cache-clear");
-              button.textContent = "";  // Let fluent handle the text
+              button.setAttribute(
+                "data-l10n-id",
+                originalLabel || "pref-local-cache-clear",
+              );
+              button.textContent = ""; // Let fluent handle the text
             }, 2000);
           }
           // Update stats display
@@ -305,10 +748,12 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
             Services.prompt.alert(
               alertHost as unknown as mozIDOMWindowProxy,
               "File Picker Unavailable",
-              "Unable to open the directory picker. Please try again from the main Zotero window."
+              "Unable to open the directory picker. Please try again from the main Zotero window.",
             );
           }
-          Zotero.debug(`[${config.addonName}] FilePicker is not available in browseCacheDir handler.`);
+          Zotero.debug(
+            `[${config.addonName}] FilePicker is not available in browseCacheDir handler.`,
+          );
           return;
         }
 
@@ -323,7 +768,7 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
             const testFile = PathUtils.join(fp.file, ".zotero-inspire-test");
             await IOUtils.writeUTF8(testFile, "test");
             await IOUtils.remove(testFile, { ignoreAbsent: true });
-            
+
             // Directory is writable, save preference
             setPref("local_cache_custom_dir", fp.file);
             // Reinitialize cache with new directory
@@ -332,7 +777,7 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
             const doc = prefWin?.document;
             if (doc) {
               const input = doc.getElementById(
-                "zotero-prefpane-zoteroinspire-local_cache_custom_dir"
+                "zotero-prefpane-zoteroinspire-local_cache_custom_dir",
               ) as HTMLInputElement;
               if (input) {
                 input.value = fp.file;
@@ -348,7 +793,7 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
               Services.prompt.alert(
                 alertHost as unknown as mozIDOMWindowProxy,
                 "Invalid Directory",
-                `Selected directory is not writable. Please choose a different location.\n\nError: ${err}`
+                `Selected directory is not writable. Please choose a different location.\n\nError: ${err}`,
               );
             }
           }
@@ -364,11 +809,11 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
           const doc = (data.window as Window).document;
           localCache.getCacheDir().then((dir) => {
             const input = doc.getElementById(
-              "zotero-prefpane-zoteroinspire-local_cache_custom_dir"
+              "zotero-prefpane-zoteroinspire-local_cache_custom_dir",
             ) as HTMLInputElement;
             if (input && dir) {
               input.value = "";
-              input.placeholder = dir;  // Show default path
+              input.placeholder = dir; // Show default path
               input.title = dir;
             }
             updateCacheStatsDisplay(doc);
@@ -380,35 +825,6 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       return;
   }
 }
-
-// function onShortcuts(type: string) {
-// }
-
-// function onDialogEvents(type: string) {
-//   switch (type) {
-//     case "dialogExample":
-//       HelperExampleFactory.dialogExample();
-//       break;
-//     case "clipboardExample":
-//       HelperExampleFactory.clipboardExample();
-//       break;
-//     case "filePickerExample":
-//       HelperExampleFactory.filePickerExample();
-//       break;
-//     case "progressWindowExample":
-//       HelperExampleFactory.progressWindowExample();
-//       break;
-//     case "vtableExample":
-//       HelperExampleFactory.vtableExample();
-//       break;
-//     default:
-//       break;
-//   }
-// }
-
-// Add your hooks here. For element click, etc.
-// Keep in mind hooks only do dispatch. Don't add code that does real jobs in hooks.
-// Otherwise the code would be hard to read and maintian.
 
 export default {
   onStartup,

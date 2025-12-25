@@ -21,7 +21,8 @@ export function extractAuthorNamesFromReference(
   if (Array.isArray(reference?.authors) && reference.authors.length) {
     const totalAuthors = reference.authors.length;
     // For large collaborations, only extract first author
-    const effectiveLimit = totalAuthors > LARGE_COLLABORATION_THRESHOLD ? 1 : limit;
+    const effectiveLimit =
+      totalAuthors > LARGE_COLLABORATION_THRESHOLD ? 1 : limit;
     const result: string[] = [];
     const maxToProcess = Math.min(totalAuthors, effectiveLimit);
     for (let i = 0; i < maxToProcess; i++) {
@@ -69,11 +70,13 @@ export function extractAuthorNamesLimited(
   }
   const totalAuthors = authors.length;
   // For large collaborations, only extract first author
-  const effectiveLimit = totalAuthors > LARGE_COLLABORATION_THRESHOLD ? 1 : limit;
+  const effectiveLimit =
+    totalAuthors > LARGE_COLLABORATION_THRESHOLD ? 1 : limit;
   const result: string[] = [];
   const maxToProcess = Math.min(totalAuthors, effectiveLimit);
   for (let i = 0; i < maxToProcess; i++) {
-    const name = authors[i]?.full_name || authors[i]?.full_name_unicode_normalized;
+    const name =
+      authors[i]?.full_name || authors[i]?.full_name_unicode_normalized;
     if (name) {
       result.push(name);
     }
@@ -119,8 +122,13 @@ export function isValidBAI(bai: string): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Extract author search info (fullName + BAI/recid) from INSPIRE authors array.
- * BAI (INSPIRE Author ID) like "Feng.Kun.Guo.1" is the most reliable for precise search.
+ * Extract author search info (fullName + BAI + recid) from INSPIRE authors array.
+ *
+ * Query priority for author profile lookup:
+ * 1. recid: Direct `/api/authors/{recid}` lookup - 100% accurate, fastest
+ * 2. BAI (INSPIRE Author ID) like "Feng.Kun.Guo.1" - highly reliable search
+ * 3. fullName: Fallback when recid and BAI are not available
+ *
  * For large collaborations (>50 authors), only extract first author's info.
  * See: https://github.com/inspirehep/rest-api-doc
  */
@@ -132,13 +140,20 @@ export function extractAuthorSearchInfos(
     return undefined;
   }
   // For large collaborations, only extract first author's search info
-  const effectiveLimit = authors.length > LARGE_COLLABORATION_THRESHOLD ? 1 : limit;
+  const effectiveLimit =
+    authors.length > LARGE_COLLABORATION_THRESHOLD ? 1 : limit;
   const result: AuthorSearchInfo[] = [];
   const maxToProcess = Math.min(authors.length, effectiveLimit);
   for (let i = 0; i < maxToProcess; i++) {
     const author = authors[i];
     const fullName = author?.full_name || author?.full_name_unicode_normalized;
+
+    // FTR-AUTHOR-PROFILE-FIX: Always push an entry to maintain index alignment
+    // with entry.authors array. Even if fullName is missing, push a placeholder
+    // so that authorSearchInfos[i] corresponds to authors[i].
     if (!fullName) {
+      // Push placeholder with empty fullName to maintain index alignment
+      result.push({ fullName: "" });
       continue;
     }
 
@@ -154,12 +169,13 @@ export function extractAuthorSearchInfos(
       }
     }
 
-    // Extract recid for display purposes (not used for search anymore)
+    // Extract recid for direct /api/authors/{recid} lookup (highest priority)
     let recid: string | undefined;
     if (author.recid) {
       recid = String(author.recid);
     } else if (author.record?.$ref) {
-      const match = author.record.$ref.match(/\/authors\/(\d+)$/);
+      // Allow trailing query/fragment when extracting recid (some APIs append params)
+      const match = author.record.$ref.match(/\/authors\/(\d+)/);
       if (match) {
         recid = match[1];
       }
@@ -172,4 +188,3 @@ export function extractAuthorSearchInfos(
 
 // Re-export AUTHOR_IDS_EXTRACT_LIMIT for convenience
 export { AUTHOR_IDS_EXTRACT_LIMIT };
-

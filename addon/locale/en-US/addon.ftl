@@ -44,11 +44,13 @@ references-panel-status-empty = Select an item to load INSPIRE data
 references-panel-reader-mode = INSPIRE data is unavailable in the reader view
 references-panel-select-item = Select a single regular item to view INSPIRE data
 references-panel-no-recid = INSPIRE record not found for this item
+references-panel-recid-found = INSPIRE record found! Loading references...
 references-panel-status-loading = Loading references...
 references-panel-status-loading-cited = Loading citing records...
 references-panel-status-loading-entry = Loading citing records for the selected reference...
 references-panel-status-loading-author = Loading papers by the author...
 references-panel-status-error = Failed to load data from INSPIRE
+references-panel-status-stale-cache = Using offline cache ({ $hours }h old) - data may be outdated
 references-panel-empty-list = No references available
 references-panel-empty-cited = No citing records found
 references-panel-entry-empty = Select a reference to view citing records
@@ -119,6 +121,8 @@ references-panel-toast-linked = Related item linked successfully
 references-panel-toast-added = Reference added to your library
 references-panel-toast-missing = Article not found in INSPIRE-HEP
 references-panel-toast-no-pdf = This item has no PDF attachment
+references-panel-toast-selected = Item selected in library
+references-panel-toast-bibtex-success = BibTeX copied to clipboard
 references-panel-unknown-author = Unknown author
 references-panel-year-unknown = n.d.
 references-panel-no-title = Title unavailable
@@ -139,11 +143,59 @@ references-panel-entry-select = Select a reference entry to view citing records
 references-panel-entry-label-default = Selected reference
 references-panel-loading-abstract = Loading abstract...
 references-panel-no-abstract = No abstract available
+# Hover Preview Card (FTR-HOVER-PREVIEW)
+references-panel-preview-loading = Loading details...
+references-panel-preview-abstract-truncated = [truncated]
 references-panel-author-papers-label = Papers by { $author }
 references-panel-author-click-hint = Click to view papers by { $author }
+references-panel-author-profile-loading = Loading author profile...
+references-panel-author-profile-unavailable = Author profile not available
+references-panel-author-stats-loading = Loading statistics...
+references-panel-author-stats = { $papers } papers · { $citations } citations · h-index: { $h }
+references-panel-author-stats-no-self = { $papers } papers · { $citations } citations (no self) · h-index: { $h }
+references-panel-author-stats-partial = Based on { $count } loaded papers
+references-panel-author-advisors = Advisors
+references-panel-author-emails = Emails
+references-panel-author-orcid-tooltip = Open ORCID profile
+references-panel-author-inspire-tooltip = View on INSPIRE
+references-panel-author-homepage-tooltip = Open homepage
+references-panel-author-profile-collapse = Collapse
+references-panel-author-profile-expand = Expand
+references-panel-author-preview-view-papers = View all papers
+references-panel-author-copied = Copied
+references-panel-author-orcid-label = ORCID
+references-panel-author-bai-label = BAI
+references-panel-author-recid-label = INSPIRE ID
 references-panel-copy-bibtex = Copy BibTeX
+references-panel-copy-texkey = Copy TeX key
+references-panel-pdf-open = Open PDF
+references-panel-pdf-find = Find Full Text
+references-panel-pdf-finding = Finding full text...
+references-panel-pdf-not-found = No full text found
 references-panel-bibtex-copied = BibTeX copied to clipboard
 references-panel-bibtex-failed = Failed to fetch BibTeX
+references-panel-texkey-copied = TeX key copied to clipboard
+references-panel-texkey-failed = Failed to copy TeX key
+references-panel-copy-link = Copy link
+references-panel-open-link = Open in browser
+references-panel-link-copied = Link copied to clipboard
+references-panel-copy-failed = Failed to copy to clipboard
+
+# Abstract Copy Context Menu
+references-panel-abstract-copy = Copy
+references-panel-abstract-copy-selection = Copy Selection
+references-panel-abstract-copy-latex = Copy as LaTeX
+references-panel-abstract-copied = Abstract copied to clipboard
+references-panel-abstract-latex-copied = LaTeX source copied to clipboard
+
+# Preview Card Action Buttons (FTR-HOVER-PREVIEW)
+references-panel-status-local = In Library
+references-panel-status-online = Online
+references-panel-button-add = Add to Library
+references-panel-button-link = Link
+references-panel-button-unlink = Unlink
+references-panel-button-select = Select
+references-panel-button-open-pdf = Open PDF
 
 update-cancelled = Update cancelled by user
 update-cancelled-stats = Updated { $completed }/{ $total } items before cancellation
@@ -160,12 +212,25 @@ references-panel-no-recid-entries = No INSPIRE records to export
 # Export menu localization strings
 references-panel-export-copy-header = 📋 Copy to Clipboard
 references-panel-export-file-header = 💾 Export to File
+references-panel-export-copy-texkey = Copy citation keys
+references-panel-export-texkey-copying = Copying citation keys...
+references-panel-export-texkey-copied = Copied { $count } citation key(s)
+references-panel-export-texkey-failed = Failed to copy citation keys
 references-panel-export-copied = { $count } { $format } entries copied
 references-panel-export-saved = { $count } { $format } entries saved
 references-panel-export-clipboard-failed = Failed to copy to clipboard (content too large?)
 references-panel-export-too-large = Content too large ({ $size }KB) - please use "Export to File" instead
 references-panel-export-cancelled = Export cancelled
 references-panel-export-save-title = Export References
+
+# Citation style export (uses Zotero's built-in bibliography dialog)
+references-panel-export-citation-header = 📝 Citation Style
+references-panel-export-citation-copied = { $count } formatted references copied
+references-panel-export-citation-no-local = No local Zotero items to format (only local library items can use citation styles)
+references-panel-export-citation-select-style = Select Citation Style...
+references-panel-export-citation-import-needed = { $count } reference(s) need to be imported to your Zotero library first. Select a collection to import them.
+references-panel-export-citation-importing = Importing { $done } / { $total } for citation export...
+references-panel-export-citation-import-failed = Failed to import some references. Only { $success } of { $total } can be formatted.
 
 # Chart localization strings
 references-panel-chart-collapse = Collapse chart
@@ -209,11 +274,13 @@ references-panel-filter-count-search =
 references-panel-cache-source-api = From INSPIRE
 references-panel-cache-source-memory = From memory cache
 references-panel-cache-source-local = From local cache ({ $age }h ago)
+references-panel-cache-source-local-expired = From expired cache ({ $age }h ago) - offline mode
 
 # Context menu copy actions
 menuitem-copy-bibtex = Copy BibTeX
 menuitem-copy-inspire-link = Copy INSPIRE link
 menuitem-copy-citation-key = Copy citation key
+menuitem-copy-inspire-link-md = Copy INSPIRE link (Markdown)
 menuitem-copy-zotero-link = Copy Zotero link
 copy-success-bibtex =
   { $count ->
@@ -221,6 +288,7 @@ copy-success-bibtex =
    *[other] Copied { $count } BibTeX entries
   }
 copy-success-inspire-link = INSPIRE link copied to clipboard
+copy-success-inspire-link-md = Markdown link copied to clipboard
 copy-success-citation-key =
   { $count ->
     [one] Copied 1 citation key
@@ -267,5 +335,133 @@ references-panel-batch-duplicate-cancel = Cancel
 
 # PDF Citation Lookup (FTR-PDF-ANNOTATE)
 pdf-annotate-lookup-button = Look up in References
-pdf-annotate-not-found = Reference [{ $label }] not found in this paper
+pdf-annotate-not-found = Reference [{ $label }] is not in the INSPIRE reference list for this paper. If it exists in the PDF but not here, consider submitting a correction to INSPIRE.
 pdf-annotate-no-text-layer = This PDF has no text layer. Citations cannot be detected.
+
+# Multi-label matching (FTR-PDF-ANNOTATE-MULTI-LABEL)
+pdf-annotate-multi-match =
+  { $count ->
+    [one] Found 1 entry for [{ $label }]
+   *[other] Found { $count } entries for [{ $label }]
+  }
+pdf-annotate-multi-match-truncated = Found { $count } entries for [{ $label }] (showing first { $shown })
+pdf-annotate-fallback-warning = INSPIRE references may differ from the PDF (labels: { $rate }%). Using position match; consider submitting a correction to INSPIRE.
+pdf-annotate-parse-success = Parsed PDF references: { $total } citations ({ $multi } multi-paper)
+
+# Smart Update feature (FTR-SMART-UPDATE)
+smart-update-untitled = (Untitled)
+smart-update-value-empty = (empty)
+smart-update-field-title = Title
+smart-update-field-date = Date
+smart-update-field-journal = Journal
+smart-update-field-volume = Volume
+smart-update-field-pages = Pages
+smart-update-field-issue = Issue
+smart-update-field-abstract = Abstract
+smart-update-field-doi = DOI
+smart-update-field-arxiv = arXiv
+smart-update-field-citations = Citations
+smart-update-field-citations-wo-self = Citations (w/o self)
+smart-update-field-citekey = Citation Key
+smart-update-field-collaboration = Collaboration
+smart-update-field-authors = Authors
+
+# Smart Update Preview Dialog
+smart-update-preview-title = Smart Update Preview
+smart-update-preview-header = Changes for: { $title }
+smart-update-preview-info = Select the fields you want to update. Uncheck to skip a field.
+smart-update-preview-current = Current
+smart-update-preview-new = New
+smart-update-preview-apply = Apply
+smart-update-preview-cancel = Cancel
+smart-update-preview-no-changes = No changes detected for this item.
+
+# Auto-check update notification (FTR-SMART-UPDATE-AUTO-CHECK)
+smart-update-auto-check-available = Updates available from INSPIRE
+smart-update-auto-check-view = View Changes
+smart-update-auto-check-dismiss = Dismiss
+smart-update-auto-check-changes =
+  { $count ->
+    [one] 1 field has new data
+   *[other] { $count } fields have new data
+  }
+
+# Ambiguous citation picker (FTR-AMBIGUOUS-AUTHOR-YEAR)
+pdf-annotate-ambiguous-title = Multiple matches for "{ $citation }"
+pdf-annotate-ambiguous-message = This citation matches multiple papers. Please select the correct one:
+pdf-annotate-ambiguous-cancel = Cancel
+# FTR-AMBIGUOUS-AUTHOR-YEAR: Preview message for ambiguous author-year match
+pdf-annotate-ambiguous-preview-hint = Author-year match only; click to select
+
+# Preprint Watch feature (FTR-PREPRINT-WATCH)
+preprint-check-menu = Check Preprint Status
+preprint-check-collection-menu = Check Preprints in Collection
+preprint-check-all-menu = Check All Preprints in Library
+preprint-check-progress = Checking preprints... ({ $current }/{ $total })
+preprint-check-scanning = Scanning library for preprints...
+preprint-check-cancelled = Check cancelled
+preprint-found-published =
+  { $count ->
+    [one] 1 preprint has been published!
+   *[other] { $count } preprints have been published!
+  }
+preprint-all-current = All preprints are still unpublished.
+preprint-no-preprints = No unpublished preprints found.
+preprint-update-success =
+  { $count ->
+    [one] Successfully updated 1 item.
+   *[other] Successfully updated { $count } items.
+  }
+preprint-update-selected = Update Selected
+preprint-select-all = Select All
+preprint-cancel = Cancel
+preprint-doi-updated = DOI updated: { $oldDoi } → { $newDoi }
+preprint-results-published = Published
+preprint-results-unpublished = Unpublished
+preprint-results-errors = Errors
+
+# Collaboration Tags feature (FTR-COLLAB-TAGS)
+collab-tag-menu-add = Add Collaboration Tags
+collab-tag-menu-reapply = Reapply Collaboration Tags
+collab-tag-progress = Adding collaboration tags...
+collab-tag-result =
+  { $added ->
+    [0] { $updated ->
+      [0] No changes
+      [one] Updated 1 tag
+     *[other] Updated { $updated } tags
+    }
+    [one] Added 1 tag{ $updated ->
+      [0] {""}
+     *[other] , updated { $updated }
+    }
+   *[other] Added { $added } tags{ $updated ->
+      [0] {""}
+     *[other] , updated { $updated }
+    }
+  }{ $skipped ->
+    [0] {""}
+   *[other] , skipped { $skipped }
+  }
+collab-tag-no-selection = Select at least one item to add collaboration tags
+collab-tag-disabled = Enable collaboration tags in Preferences → INSPIRE to use this feature
+
+# Funding extraction - Main window menu
+menuitem-copy-funding = Copy Funding Info
+
+# Funding extraction - Progress messages
+funding-extraction-progress = Extracting funding info from PDF...
+funding-extraction-complete = Found { $count } grant(s) from { $funders } funder(s)
+funding-extraction-none = No funding information found
+funding-no-selection = No items selected
+funding-no-entries = No entries to export
+funding-no-pdf = No PDF attachment found
+funding-no-linked-items = No items are linked to Zotero library
+funding-some-unlinked = { $count } entries are not linked (skipped)
+
+# Funding extraction - References panel export menu
+references-panel-export-funding-header = — Funding Info —
+references-panel-export-funding-copy = Copy Funding Table
+references-panel-export-funding-csv = Export Funding (CSV)
+references-panel-export-funding-saved = Funding table saved ({ $count } entries)
+references-panel-export-funding-copied = Funding table copied ({ $count } entries)

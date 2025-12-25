@@ -6,6 +6,7 @@ import {
 } from "./constants";
 import type { InspireArxivDetails } from "./types";
 import { formatArxivDetails } from "./formatters";
+import { LRUCache } from "./utils";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INSPIRE recid extraction functions
@@ -41,7 +42,9 @@ export function extractRecidFromRecordRef(ref?: string): string | null {
   return match ? match[1] : null;
 }
 
-export function extractRecidFromUrls(urls?: Array<{ value: string }>): string | null {
+export function extractRecidFromUrls(
+  urls?: Array<{ value: string }>,
+): string | null {
   if (!Array.isArray(urls)) {
     return null;
   }
@@ -66,7 +69,10 @@ export function extractRecidFromUrl(url?: string | null): string | null {
 // URL Building Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildReferenceUrl(reference: any, recid?: string | null): string | undefined {
+export function buildReferenceUrl(
+  reference: any,
+  recid?: string | null,
+): string | undefined {
   if (recid) {
     return `${INSPIRE_LITERATURE_URL}/${recid}`;
   }
@@ -76,49 +82,61 @@ export function buildReferenceUrl(reference: any, recid?: string | null): string
   return buildFallbackUrl(reference);
 }
 
+/**
+ * Build fallback URL from DOI or arXiv info.
+ * FTR-REFACTOR: Unified function that works with both reference and metadata objects.
+ *
+ * @param source - Source object containing DOI/arXiv info (reference or metadata)
+ * @param arxiv - Explicit arXiv details to use (optional)
+ * @returns URL string or undefined
+ */
 export function buildFallbackUrl(
-  reference: any,
+  source: any,
   arxiv?: InspireArxivDetails | string | null,
 ): string | undefined {
-  if (Array.isArray(reference?.dois) && reference.dois.length) {
-    return `${DOI_ORG_URL}/${reference.dois[0]}`;
-  }
-  const explicit = formatArxivDetails(arxiv);
-  if (explicit?.id) {
-    return `${ARXIV_ABS_URL}/${explicit.id}`;
-  }
-  const derived = formatArxivDetails(reference?.arxiv_eprint);
-  if (derived?.id) {
-    return `${ARXIV_ABS_URL}/${derived.id}`;
-  }
-  return undefined;
-}
-
-export function buildFallbackUrlFromMetadata(
-  metadata: any,
-  arxiv?: InspireArxivDetails | null,
-): string | undefined {
-  if (!metadata) {
+  if (!source) {
     return undefined;
   }
-  if (Array.isArray(metadata?.dois) && metadata.dois.length) {
-    const first = metadata.dois[0];
+
+  // Try DOI first (handles both string and {value: string} formats)
+  if (Array.isArray(source?.dois) && source.dois.length) {
+    const first = source.dois[0];
     const value =
       typeof first === "string" ? first : (first?.value as string | undefined);
     if (value) {
       return `${DOI_ORG_URL}/${value}`;
     }
   }
-  const provided = formatArxivDetails(arxiv)?.id;
-  if (provided) {
-    return `${ARXIV_ABS_URL}/${provided}`;
+
+  // Try explicit arXiv parameter
+  const explicit = formatArxivDetails(arxiv);
+  if (explicit?.id) {
+    return `${ARXIV_ABS_URL}/${explicit.id}`;
   }
-  const derived = extractArxivFromMetadata(metadata);
-  if (derived?.id) {
-    return `${ARXIV_ABS_URL}/${derived.id}`;
+
+  // Try arXiv from source - reference style (arxiv_eprint)
+  if (source?.arxiv_eprint) {
+    const derived = formatArxivDetails(source.arxiv_eprint);
+    if (derived?.id) {
+      return `${ARXIV_ABS_URL}/${derived.id}`;
+    }
   }
+
+  // Try arXiv from source - metadata style (arxiv_eprints array)
+  if (Array.isArray(source?.arxiv_eprints) && source.arxiv_eprints.length) {
+    const derived = extractArxivFromMetadata(source);
+    if (derived?.id) {
+      return `${ARXIV_ABS_URL}/${derived.id}`;
+    }
+  }
+
   return undefined;
 }
+
+/**
+ * @deprecated Use buildFallbackUrl instead. This alias is kept for backward compatibility.
+ */
+export const buildFallbackUrlFromMetadata = buildFallbackUrl;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // arXiv Extraction Functions
@@ -172,11 +190,40 @@ export function extractArxivFromMetadata(
   return undefined;
 }
 
+/**
+ * Extract arXiv ID from item (Extra field, URL, or Archive Location)
+ */
+export function extractArxivIdFromItem(item: Zotero.Item): string | undefined {
+  // Try Extra field
+  const extra = item.getField("extra") as string;
+  if (extra) {
+    const match = extra.match(/arXiv:\s*([0-9.]+|[a-z-]+\/[0-9]+)/i);
+    if (match) return match[1];
+  }
+
+  // Try URL field
+  const url = item.getField("url") as string;
+  if (url) {
+    const match = url.match(/arxiv\.org\/abs\/([0-9.]+|[a-z-]+\/[0-9]+)/i);
+    if (match) return match[1];
+  }
+
+  // Try Archive Location (sometimes used for arXiv ID)
+  const archiveLoc = item.getField("archiveLocation") as string;
+  if (archiveLoc && /^[0-9.]+|[a-z-]+\/[0-9]+$/.test(archiveLoc)) {
+    return archiveLoc;
+  }
+
+  return undefined;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Database Query Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function findItemByRecid(recid: string): Promise<Zotero.Item | null> {
+export async function findItemByRecid(
+  recid: string,
+): Promise<Zotero.Item | null> {
   const fieldID = Zotero.ItemFields.getID("archiveLocation");
   if (!fieldID) {
     return null;
@@ -259,7 +306,9 @@ export async function copyToClipboard(text: string): Promise<boolean> {
  * @param arxivIds Array of arXiv IDs (e.g., ["2305.12345", "hep-ph/0001234"])
  * @returns Map of arXiv ID → local item ID
  */
-export async function findItemsByArxivs(arxivIds: string[]): Promise<Map<string, number>> {
+export async function findItemsByArxivs(
+  arxivIds: string[],
+): Promise<Map<string, number>> {
   const result = new Map<string, number>();
   if (!arxivIds.length) return result;
 
@@ -270,7 +319,7 @@ export async function findItemsByArxivs(arxivIds: string[]): Promise<Map<string,
   for (let i = 0; i < arxivIds.length; i += CHUNK_SIZE) {
     const chunk = arxivIds.slice(i, i + CHUNK_SIZE);
     // Build LIKE patterns for arXiv IDs
-    const patterns = chunk.flatMap(id => [
+    const patterns = chunk.flatMap((id) => [
       `%arXiv:${id}%`,
       `%_eprint:${id}%`,
     ]);
@@ -288,7 +337,10 @@ export async function findItemsByArxivs(arxivIds: string[]): Promise<Map<string,
           const extra = row.value as string;
           // Match arXiv ID from extra field
           for (const arxivId of chunk) {
-            if (extra.includes(`arXiv:${arxivId}`) || extra.includes(`_eprint:${arxivId}`)) {
+            if (
+              extra.includes(`arXiv:${arxivId}`) ||
+              extra.includes(`_eprint:${arxivId}`)
+            ) {
               result.set(arxivId, Number(row.itemID));
               break;
             }
@@ -308,7 +360,9 @@ export async function findItemsByArxivs(arxivIds: string[]): Promise<Map<string,
  * @param dois Array of DOIs (e.g., ["10.1103/PhysRevD.100.123456"])
  * @returns Map of DOI → local item ID
  */
-export async function findItemsByDOIs(dois: string[]): Promise<Map<string, number>> {
+export async function findItemsByDOIs(
+  dois: string[],
+): Promise<Map<string, number>> {
   const result = new Map<string, number>();
   if (!dois.length) return result;
 
@@ -319,8 +373,10 @@ export async function findItemsByDOIs(dois: string[]): Promise<Map<string, numbe
   for (let i = 0; i < dois.length; i += CHUNK_SIZE) {
     const chunk = dois.slice(i, i + CHUNK_SIZE);
     // Normalize DOIs for comparison (lowercase)
-    const normalizedChunk = chunk.map(d => d.toLowerCase());
-    const placeholders = normalizedChunk.map(() => "LOWER(value) = ?").join(" OR ");
+    const normalizedChunk = chunk.map((d) => d.toLowerCase());
+    const placeholders = normalizedChunk
+      .map(() => "LOWER(value) = ?")
+      .join(" OR ");
     const sql = `
       SELECT itemID, value
       FROM itemData
@@ -328,12 +384,15 @@ export async function findItemsByDOIs(dois: string[]): Promise<Map<string, numbe
       WHERE fieldID = ? AND (${placeholders})
     `;
     try {
-      const rows = await Zotero.DB.queryAsync(sql, [fieldID, ...normalizedChunk]);
+      const rows = await Zotero.DB.queryAsync(sql, [
+        fieldID,
+        ...normalizedChunk,
+      ]);
       if (rows) {
         for (const row of rows) {
           const doiValue = (row.value as string).toLowerCase();
           // Find original DOI (case-insensitive match)
-          const originalDoi = chunk.find(d => d.toLowerCase() === doiValue);
+          const originalDoi = chunk.find((d) => d.toLowerCase() === doiValue);
           if (originalDoi) {
             result.set(originalDoi, Number(row.itemID));
           }
@@ -352,7 +411,9 @@ export async function findItemsByDOIs(dois: string[]): Promise<Map<string, numbe
  * @param recids Array of INSPIRE recids
  * @returns Map of recid → local item ID
  */
-export async function findItemsByRecids(recids: string[]): Promise<Map<string, number>> {
+export async function findItemsByRecids(
+  recids: string[],
+): Promise<Map<string, number>> {
   const result = new Map<string, number>();
   if (!recids.length) return result;
 
@@ -387,5 +448,5 @@ export async function findItemsByRecids(recids: string[]): Promise<Map<string, n
 // Recid Lookup Cache
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const recidLookupCache = new Map<number, string>();
-
+// Use LRUCache to prevent unbounded memory growth (max 500 entries)
+export const recidLookupCache = new LRUCache<number, string>(500);

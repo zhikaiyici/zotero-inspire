@@ -38,10 +38,10 @@ type StatusChangeCallback = (status: RateLimiterStatus) => void;
 
 /**
  * Passive Rate Limiter for INSPIRE API requests.
- * 
+ *
  * Design philosophy: ZERO overhead for normal requests.
  * Only handles 429 responses with exponential backoff retry.
- * 
+ *
  * This is the most performant approach:
  * - No pre-emptive rate limiting (no delays before requests)
  * - No request queueing
@@ -89,7 +89,9 @@ export class InspireRateLimiter {
       try {
         callback(status);
       } catch (err) {
-        Zotero.debug(`[${config.addonName}] Rate limiter callback error: ${err}`);
+        Zotero.debug(
+          `[${config.addonName}] Rate limiter callback error: ${err}`,
+        );
       }
     }
   }
@@ -101,7 +103,7 @@ export class InspireRateLimiter {
   }
 
   /**
-   * Execute a fetch request. 
+   * Execute a fetch request.
    * ZERO overhead - just passes through to native fetch.
    * Only adds logic on 429 responses.
    */
@@ -124,7 +126,9 @@ export class InspireRateLimiter {
       // Only handle 429 rate limit responses
       if (response.status === 429) {
         if (retryCount >= MAX_RETRY_ATTEMPTS) {
-          Zotero.debug(`[${config.addonName}] Rate limit: Max retries exceeded for ${url}`);
+          Zotero.debug(
+            `[${config.addonName}] Rate limit: Max retries exceeded for ${url}`,
+          );
           return response;
         }
 
@@ -133,23 +137,32 @@ export class InspireRateLimiter {
 
         const retryAfter = response.headers.get("Retry-After");
         const delay = retryAfter
-          ? parseInt(retryAfter, 10) * 1000 || this.calculateBackoffDelay(retryCount)
+          ? parseInt(retryAfter, 10) * 1000 ||
+            this.calculateBackoffDelay(retryCount)
           : this.calculateBackoffDelay(retryCount);
 
-        Zotero.debug(`[${config.addonName}] 429 received. Retry ${retryCount + 1}/${MAX_RETRY_ATTEMPTS} after ${Math.round(delay)}ms`);
+        Zotero.debug(
+          `[${config.addonName}] 429 received. Retry ${retryCount + 1}/${MAX_RETRY_ATTEMPTS} after ${Math.round(delay)}ms`,
+        );
 
         await this.sleep(delay);
-        
+
         this.activeRetries--;
         this.notifyStatusChange();
-        
+
         return this.executeWithRetry(url, options, retryCount + 1);
       }
 
       return response;
     } catch (err) {
       // Re-throw abort errors immediately
-      if (err instanceof DOMException && err.name === "AbortError") {
+      // FTR-ABORT-CONTROLLER-FIX: Check error name instead of instanceof DOMException
+      // (DOMException may not be available in Zotero's sandboxed environment)
+      if (
+        err &&
+        typeof err === "object" &&
+        (err as any).name === "AbortError"
+      ) {
         throw err;
       }
       throw err;
@@ -167,7 +180,7 @@ export class InspireRateLimiter {
 
 /**
  * Fetch wrapper for INSPIRE API with 429 retry.
- * 
+ *
  * ZERO OVERHEAD for normal requests - direct pass-through to native fetch.
  * Only adds retry logic when receiving 429 responses.
  */
@@ -182,11 +195,12 @@ export function getRateLimiterStatus(): RateLimiterStatus {
   return InspireRateLimiter.getInstance().getStatus();
 }
 
-export function onRateLimiterStatusChange(callback: StatusChangeCallback): () => void {
+export function onRateLimiterStatusChange(
+  callback: StatusChangeCallback,
+): () => void {
   return InspireRateLimiter.getInstance().onStatusChange(callback);
 }
 
 export function resetRateLimiter(): void {
   InspireRateLimiter.reset();
 }
-

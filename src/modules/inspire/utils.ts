@@ -6,16 +6,35 @@ import { SEARCH_HISTORY_PREF_KEY } from "./constants";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Cache statistics for monitoring cache efficiency.
+ */
+export interface CacheStats {
+  /** Number of cache hits */
+  hits: number;
+  /** Number of cache misses */
+  misses: number;
+  /** Hit rate (0-1) */
+  hitRate: number;
+  /** Current cache size */
+  size: number;
+  /** Maximum cache size */
+  maxSize: number;
+}
+
+/**
  * LRU (Least Recently Used) Cache implementation.
  * Extends Map with automatic eviction of least recently used entries when full.
- * 
+ *
  * Features:
  * - O(1) get and set operations
  * - Automatic eviction when exceeding maxSize
  * - get() moves entry to "most recently used" position
+ * - Built-in hit/miss statistics tracking
  */
 export class LRUCache<K, V> extends Map<K, V> {
   private readonly maxSize: number;
+  private _hits = 0;
+  private _misses = 0;
 
   constructor(maxSize: number) {
     super();
@@ -24,13 +43,17 @@ export class LRUCache<K, V> extends Map<K, V> {
 
   /**
    * Get value and move to most recently used position.
+   * Tracks hits and misses for statistics.
    */
   get(key: K): V | undefined {
     const value = super.get(key);
     if (value !== undefined) {
+      this._hits++;
       // Move to end (most recently used) by re-inserting
       super.delete(key);
       super.set(key, value);
+    } else {
+      this._misses++;
     }
     return value;
   }
@@ -61,10 +84,39 @@ export class LRUCache<K, V> extends Map<K, V> {
   }
 
   /**
-   * Peek at value without updating position.
+   * Peek at value without updating position or tracking statistics.
    */
   peek(key: K): V | undefined {
     return super.get(key);
+  }
+
+  /**
+   * Get cache statistics.
+   */
+  getStats(): CacheStats {
+    const total = this._hits + this._misses;
+    return {
+      hits: this._hits,
+      misses: this._misses,
+      hitRate: total > 0 ? this._hits / total : 0,
+      size: this.size,
+      maxSize: this.maxSize,
+    };
+  }
+
+  /**
+   * Reset statistics counters.
+   */
+  resetStats(): void {
+    this._hits = 0;
+    this._misses = 0;
+  }
+
+  /**
+   * Get max size of this cache.
+   */
+  getMaxSize(): number {
+    return this.maxSize;
   }
 }
 
@@ -121,6 +173,7 @@ export class ZInsUtils {
 export class ReaderTabHelper {
   // Get Zotero_Tabs dynamically to avoid initialization timing issues
   private static get tabs() {
+    // eslint-disable-next-line no-restricted-globals
     return typeof Zotero_Tabs !== "undefined" ? Zotero_Tabs : undefined;
   }
 
@@ -158,7 +211,9 @@ export class ReaderTabHelper {
   }
 
   static getReaderByTabID(tabID: string) {
-    return this.readerAPI?.getByTabID?.(tabID) as _ZoteroTypes.ReaderInstance | undefined;
+    return this.readerAPI?.getByTabID?.(tabID) as
+      | _ZoteroTypes.ReaderInstance
+      | undefined;
   }
 
   static getReaderByItemID(itemID?: number) {
@@ -184,7 +239,9 @@ export class ReaderTabHelper {
    * Find reader tab ID by looking at parent item's attachments.
    * Reader tabs are opened for attachment items, not parent items.
    */
-  static getReaderTabIDForParentItem(parentItemID?: number): string | undefined {
+  static getReaderTabIDForParentItem(
+    parentItemID?: number,
+  ): string | undefined {
     if (!parentItemID) {
       return undefined;
     }
@@ -225,10 +282,107 @@ export class ReaderTabHelper {
  */
 export function clearAllHistoryPrefs(): void {
   try {
-    Zotero.Prefs.set(`${config.addonRef}.${SEARCH_HISTORY_PREF_KEY}`, "[]", true);
+    Zotero.Prefs.set(
+      `${config.addonRef}.${SEARCH_HISTORY_PREF_KEY}`,
+      "[]",
+      true,
+    );
     Zotero.debug(`[${config.addonName}] Search history cleared`);
   } catch (err) {
     Zotero.debug(`[${config.addonName}] Failed to clear history: ${err}`);
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AbortController Utilities (FTR-ABORT-CONTROLLER-FIX)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Get AbortController class that works in Zotero's environment.
+ *
+ * In Zotero plugins, AbortController may not be available in the global scope.
+ * This function tries multiple sources to find the AbortController class:
+ * 1. Global scope (if available)
+ * 2. Zotero main window (most reliable in Zotero 7)
+ *
+ * @returns AbortController class or null if not available
+ *
+ * @example
+ * const AC = getAbortControllerClass();
+ * const controller = AC ? new AC() : null;
+ */
+export function getAbortControllerClass(): typeof AbortController | null {
+  // Try global scope first
+  if (typeof AbortController !== "undefined") {
+    return AbortController;
+  }
+
+  // Try Zotero main window (most reliable in Zotero 7)
+  try {
+    const win = Zotero.getMainWindow();
+    if (win && (win as any).AbortController) {
+      return (win as any).AbortController;
+    }
+  } catch (err) {
+    Zotero.debug(
+      `[${config.addonName}] Failed to get AbortController from main window: ${err}`,
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Create an AbortController instance or return undefined if not available.
+ * Convenience wrapper around getAbortControllerClass().
+ *
+ * @returns AbortController instance or undefined if not available
+ *
+ * @example
+ * const controller = createAbortController();
+ * if (controller) {
+ *   fetch(url, { signal: controller.signal });
+ * }
+ */
+export function createAbortController(): AbortController | undefined {
+  const AC = getAbortControllerClass();
+  return AC ? new AC() : undefined;
+}
+
+/**
+ * Create a mock AbortSignal for fallback when AbortController is not available.
+ * This allows code to continue executing even when cancellation is not supported.
+ *
+ * @returns Mock AbortSignal with minimal implementation
+ */
+export function createMockSignal(): AbortSignal {
+  return {
+    aborted: false,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+    onabort: null,
+    reason: undefined,
+    throwIfAborted: () => {},
+  } as unknown as AbortSignal;
+}
+
+/**
+ * Safely create an AbortController with signal, providing mock signal as fallback.
+ *
+ * @returns Object with controller (or undefined) and signal (real or mock)
+ *
+ * @example
+ * const { controller, signal } = createAbortControllerWithSignal();
+ * fetch(url, { signal }); // Always works, even if controller is undefined
+ */
+export function createAbortControllerWithSignal(): {
+  controller: AbortController | undefined;
+  signal: AbortSignal;
+} {
+  const controller = createAbortController();
+  return {
+    controller,
+    signal: controller?.signal || createMockSignal(),
+  };
+}

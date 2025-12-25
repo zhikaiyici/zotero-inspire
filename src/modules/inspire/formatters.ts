@@ -39,6 +39,9 @@ export function getCachedStrings(): Record<string, string> {
       citationUnknown: getString("references-panel-citation-count-unknown"),
       unknownAuthor: getString("references-panel-unknown-author"),
       copyBibtex: getString("references-panel-copy-bibtex"),
+      copyTexkey: getString("references-panel-copy-texkey"),
+      pdfOpen: getString("references-panel-pdf-open" as any),
+      pdfFind: getString("references-panel-pdf-find" as any),
       noTitle: getString("references-panel-no-title"),
       // Abstract tooltip strings
       noAbstract: getString("references-panel-no-abstract"),
@@ -128,7 +131,16 @@ export function buildInitials(given: string): string {
   return wordInitials.join(" ");
 }
 
-export function formatAuthorName(rawName?: string): string {
+/**
+ * Format author name for display.
+ * By default, keeps the full name for better search accuracy.
+ * If keepFullName is false, converts first name to initials (legacy behavior).
+ *
+ * Examples:
+ *   "Guo, Feng-Kun" → "Feng-Kun Guo" (keepFullName=true, default)
+ *   "Guo, Feng-Kun" → "F.-K. Guo" (keepFullName=false)
+ */
+export function formatAuthorName(rawName?: string, keepFullName = true): string {
   if (!rawName) {
     return "";
   }
@@ -171,6 +183,13 @@ export function formatAuthorName(rawName?: string): string {
   if (!given) {
     return family || trimmed;
   }
+
+  // FTR-FULL-NAME: Keep full first name for better search accuracy
+  if (keepFullName) {
+    return `${given} ${family}`.trim();
+  }
+
+  // Legacy behavior: convert to initials
   const initials = buildInitials(given);
   if (!initials) {
     return `${given} ${family}`.trim();
@@ -184,14 +203,15 @@ export function formatAuthorName(rawName?: string): string {
  * - If totalAuthors > 50 (large collaboration), show only first author + "et al."
  * - Convert "others" to "et al."
  */
-export function formatAuthors(authors: string[], totalAuthors?: number): string {
+export function formatAuthors(
+  authors: string[],
+  totalAuthors?: number,
+): string {
   if (!authors.length) {
     return getString("references-panel-unknown-author");
   }
   // Filter out "others" and convert to et al. indication
-  const hasOthers = authors.some(
-    (name) => name.toLowerCase() === "others",
-  );
+  const hasOthers = authors.some((name) => name.toLowerCase() === "others");
   const filteredAuthors = authors.filter(
     (name) => name.toLowerCase() !== "others",
   );
@@ -208,7 +228,11 @@ export function formatAuthors(authors: string[], totalAuthors?: number): string 
     return `${formatted[0]} et al.`;
   }
   // If more authors than max, or more authors than displayed, show et al.
-  if (formatted.length > maxAuthors || actualTotal > formatted.length || hasOthers) {
+  if (
+    formatted.length > maxAuthors ||
+    actualTotal > formatted.length ||
+    hasOthers
+  ) {
     const displayCount = Math.min(formatted.length, maxAuthors);
     return `${formatted.slice(0, displayCount).join(", ")} et al.`;
   }
@@ -267,9 +291,10 @@ export function convertFullNameToSearchQuery(fullName: string): string {
 // Publication Info Formatting
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function splitPublicationInfo(
-  raw?: any | any[],
-): { primary?: any; errata?: Array<{ info: any; label: string }> } {
+export function splitPublicationInfo(raw?: any | any[]): {
+  primary?: any;
+  errata?: Array<{ info: any; label: string }>;
+} {
   if (!raw) {
     return {};
   }
@@ -339,9 +364,11 @@ export function formatPublicationInfo(
     return "";
   }
   const parts: string[] = [];
-  const journal = options?.omitJournal
+  // Get raw journal title and normalize format (add spaces after dots: "Phys.Rev.D" → "Phys. Rev. D")
+  const rawJournal = options?.omitJournal
     ? ""
     : info.journal_title || info.journal_title_abbrev || "";
+  const journal = rawJournal ? rawJournal.replace(/\.\s|\./g, ". ") : "";
   const volume = info.journal_volume || info.volume || "";
   const artid = info.artid || info.article_number || info.eprintid;
   const pageStart =
@@ -349,8 +376,7 @@ export function formatPublicationInfo(
     info.pagination ||
     (Array.isArray(info.pages) ? info.pages[0] : undefined);
   const pageEnd =
-    info.page_end ||
-    (Array.isArray(info.pages) ? info.pages[1] : undefined);
+    info.page_end || (Array.isArray(info.pages) ? info.pages[1] : undefined);
   if (journal) {
     parts.push(journal);
   }
@@ -359,7 +385,7 @@ export function formatPublicationInfo(
   }
   const normalizedFallbackYear =
     fallbackYear && typeof fallbackYear === "string"
-      ? fallbackYear.match(/\d{4}/)?.[0] ?? fallbackYear
+      ? (fallbackYear.match(/\d{4}/)?.[0] ?? fallbackYear)
       : undefined;
   const resolvedYear =
     info.year ??
@@ -452,9 +478,7 @@ export function normalizeArxivCategories(input?: any): string[] {
   }
   const values = Array.isArray(input) ? input : [input];
   return values
-    .map((value) =>
-      typeof value === "string" ? value.trim() : undefined,
-    )
+    .map((value) => (typeof value === "string" ? value.trim() : undefined))
     .filter((value): value is string => Boolean(value));
 }
 
@@ -495,13 +519,16 @@ export function buildDisplayText(entry: InspireReferenceEntry): string {
   return `${label}${entry.authorText}: ${entry.title};`;
 }
 
-export function extractJournalName(entry: InspireReferenceEntry): string | undefined {
+export function extractJournalName(
+  entry: InspireReferenceEntry,
+): string | undefined {
   const info = entry.publicationInfo;
+  // Normalize journal title format (add spaces after dots: "Phys.Rev.D" → "Phys. Rev. D")
   if (info?.journal_title) {
-    return info.journal_title;
+    return info.journal_title.replace(/\.\s|\./g, ". ");
   }
   if (info?.journal_title_abbrev) {
-    return info.journal_title_abbrev;
+    return info.journal_title_abbrev.replace(/\.\s|\./g, ". ");
   }
   if (entry.summary) {
     const match = entry.summary.match(/^([^0-9(]+?)(?:\s+\d+|\(|$)/);
@@ -567,4 +594,3 @@ export function buildEntrySearchText(entry: InspireReferenceEntry): string {
   searchTextCache.set(entry, result);
   return result;
 }
-
