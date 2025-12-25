@@ -2037,10 +2037,10 @@ export async function setInspireMeta(
         item.setField("publisher", metaInspire.publisher);
       }
 
-      if (metaInspire.title) {
+      if (metaInspire.title && !item.getField("title")) {
         item.setField("title", metaInspire.title);
       }
-      if (metaInspire.creators) {
+      if (metaInspire.creators && !item.getCreators()) {
         // Check for protected author names
         const protectionConfig = getFieldProtectionConfig();
         const localCreators = item.getCreators() as _ZoteroTypes.Item.Creator[];
@@ -2075,7 +2075,7 @@ export async function setInspireMeta(
         }
 
         if (!metaInspire.journalAbbreviation) {
-          if (item.itemType == "journalArticle") {
+          if (item.itemType == "journalArticle" && !item.getField("journalAbbreviation")) {
             item.setField("journalAbbreviation", arXivInfo);
           }
           // Clear publicationTitle if it contains arXiv info (unpublished preprint should have empty Publication field)
