@@ -482,9 +482,9 @@ export async function getCNKICount(item: Zotero.Item) {
   const searchResults = await searchCNKI(searchOption);
   if (searchResults && searchResults.length > 0) {
     for (let searchRes of searchResults) {
-      // ztoolkit.log(`searchRes.title: ${searchRes.originTitle}`);
-      // ztoolkit.log(`searchOption.title: ${searchOption.title}`);
-      if (searchRes.originTitle === searchOption.title) {
+      ztoolkit.log(`searchRes.title: ${searchRes.originTitle}`);
+      ztoolkit.log(`searchOption.title: ${searchOption.title}`);
+      if (searchRes.originTitle === searchOption.title || searchResults.length === 1) {
         cite = (searchRes.citation as string) ? (searchRes.citation as string) : "-1";
         ztoolkit.log(`CNKI citation: ${cite}`);
         break;
