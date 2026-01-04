@@ -16,6 +16,7 @@
 | **Entry Cited**   | Shows papers citing a specific reference (click citation count)         |
 | **Author Papers** | Shows all papers by a specific author (click author name)               |
 | **Search**        | Shows INSPIRE search results                                            |
+| **Favorites**     | Shows favorite authors and papers                                       |
 
 ### 1.2 Data Loading
 
@@ -77,7 +78,19 @@ A statistics visualization chart is displayed at the top of the panel for Refere
 - Abstract tooltip on hover
 - Author list: up to 10 authors; if more, shows first 3 + "others"
 
-### 1.6 Interaction Table
+### 1.6 Favorites Tab
+
+The **⭐ Favorites** tab provides quick access to favorite authors, papers, and presentations:
+
+- **Favorite Authors**: Click the star (☆/★) button in Author Papers tab or author preview card to add/remove authors
+- **Favorite Papers & Presentations**: Right-click any entry within the INSPIRE References panel and select "Add paper/presentation to favorites", or use the right-click menu in Zotero's main window. Items of type "Presentation" are categorized separately.
+- **Display**: Favorites are organized in three collapsible sections (Authors, Papers, and Presentations) with drag-and-drop reordering within each section.
+- **Filtering**: Text filter works across all favorites (searches author names, BAI, paper titles, authors, recids)
+- **Navigation**: Click favorite entries to jump to the corresponding item or author papers view
+
+**Storage**: Favorites are stored in preferences (`favorite_authors`, `favorite_papers`, and `favorite_presentations` as JSON arrays)
+
+### 1.7 Interaction Table
 
 | Action                         | Behavior                                           |
 | ------------------------------ | -------------------------------------------------- |
@@ -95,8 +108,9 @@ A statistics visualization chart is displayed at the top of the panel for Refere
 | Hover over author name         | Show author profile preview card                   |
 | Click refresh button           | Reload current view (bypass cache)                 |
 | Click copy all BibTeX button   | Copy all visible entries as BibTeX                 |
+| Right-click entry (in panel) | Context menu with favorite option                  |
 
-### 1.7 Author Profile Preview
+### 1.8 Author Profile Preview
 
 When hovering over an author name, a profile preview card appears with the following information:
 
@@ -118,6 +132,24 @@ When hovering over an author name, a profile preview card appears with the follo
 
 - LRU cache with 100 entries, 30-minute TTL
 - Multi-key caching: same profile cached under recid, BAI, and name keys
+
+---
+
+## 1.9 Item Tree Custom Columns
+
+Zotero's main item list (Item Tree) supports two custom columns:
+
+| Column | Data Source (local) | Notes |
+| ------ | ------------------- | ----- |
+| `Cites` | `Extra` field | Reads `X citations ...` lines written by this plugin; default includes self-citations |
+| `arXiv` | Journal Abbr. / Extra / URL / DOI | Extracted via `extractArxivIdFromItem()`; no network requests. Sorting normalizes old-style IDs (e.g., `hep-th/9802109`) by numeric part. |
+
+**Preferences**:
+
+| Preference | Type | Default | Description |
+| ---------- | ---- | ------- | ----------- |
+| `cites_column_exclude_self` | boolean | false | Show citation counts without self-citations when available. If the items list doesn't update, switch collections or restart Zotero. |
+| `arxiv_in_journal_abbrev` | boolean | false | Legacy: write `arXiv:...` into `journalAbbreviation` for unpublished papers (kept for backward compatibility). |
 
 ---
 
@@ -188,6 +220,7 @@ A dedicated `localCache` service stores References/Cited By/Author Papers JSON f
 |                              | Copy Zotero link             | Copy Zotero select link                                        |
 | **Collaboration Tags** | Add Collaboration Tags       | Add collaboration name as tag for large collaboration papers   |
 | **Preprint**           | Check Preprint Status        | Check if arXiv preprints have been published                   |
+| **Favorites**          | Toggle Favorite Paper        | Add/remove current item from favorites |
 | **Actions**            | Cancel update                | Cancel any ongoing update operation                            |
 
 ### 3.2 Collection Menu
@@ -445,7 +478,7 @@ Detects unpublished arXiv preprints and checks if they have been published.
 
 A Zotero item is identified as an unpublished preprint if:
 
-- `journalAbbreviation` starts with `arXiv:` AND has no non-arXiv DOI
+- `journalAbbreviation` starts with `arXiv:` (legacy mode / older items) AND has no non-arXiv DOI
 - Or has only arXiv DOI (`10.48550/arXiv.xxx`)
 - Or has `arXiv:` in Extra field but no journal info
 

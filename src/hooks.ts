@@ -18,6 +18,9 @@ import {
   onRenderModeChange,
   deriveRecidFromItem,
   clearFundingCache,
+  registerInspireItemTreeColumns,
+  unregisterInspireItemTreeColumns,
+  refreshInspireItemTreeColumns,
 } from "./modules/inspire";
 import {
   ENRICH_BATCH_RANGE,
@@ -26,11 +29,17 @@ import {
 } from "./modules/inspire/enrichConfig";
 import { getPref, setPref } from "./utils/prefs";
 import { registerPrefsScripts } from "./modules/prefScript";
+import { getExternalToken, ensureExternalToken } from "./utils/externalToken";
+import {
+  registerZInspirePickSaveTargetEndpoint,
+  unregisterZInspirePickSaveTargetEndpoint,
+} from "./modules/connectorPickSaveTarget";
 
 // Track background timers for cleanup on shutdown (PERF-FIX-1)
 let purgeTimer: ReturnType<typeof setTimeout> | undefined;
 let preprintCheckTimer: ReturnType<typeof setTimeout> | undefined;
 let preprintCheckController: AbortController | undefined;
+let itemTreePrefsObserverID: symbol | undefined;
 
 async function onStartup() {
   await Promise.all([
@@ -55,6 +64,10 @@ async function onStartup() {
 
   // Expose console commands for debugging
   exposeConsoleCommands();
+
+  // External tool integration: token + connector endpoint
+  ensureExternalToken();
+  registerZInspirePickSaveTargetEndpoint();
 
   // Purge expired local cache entries in background after startup (PERF-FIX-1: tracked timer)
   purgeTimer = setTimeout(() => {
@@ -88,6 +101,7 @@ function exposeConsoleCommands(): void {
     instance.startMemoryMonitor = (interval?: number) =>
       MemoryMonitor.getInstance().start(interval);
     instance.stopMemoryMonitor = () => MemoryMonitor.getInstance().stop();
+    instance.getExternalToken = () => getExternalToken();
   }
 }
 
@@ -170,6 +184,27 @@ async function onMainWindowLoad(_win: Window): Promise<void> {
 
   // FTR-PDF-ANNOTATE: Initialize Reader integration for citation detection
   getReaderIntegration().initialize();
+
+  // FTR-CUSTOM-COLUMNS: Register custom item tree columns (Cites, arXiv)
+  try {
+    await registerInspireItemTreeColumns();
+
+    // Refresh item tree cells when Cites column mode changes
+    if (!itemTreePrefsObserverID && (Zotero.Prefs as any).registerObserver) {
+      const prefName = `${config.prefsPrefix}.cites_column_exclude_self`;
+      itemTreePrefsObserverID = (Zotero.Prefs as any).registerObserver(
+        prefName,
+        () => {
+          refreshInspireItemTreeColumns(true);
+        },
+        true,
+      ) as symbol;
+    }
+  } catch (err) {
+    Zotero.debug(
+      `[${config.addonName}] Failed to register item tree columns: ${err}`,
+    );
+  }
 }
 
 async function onMainWindowUnload(_win: Window): Promise<void> {
@@ -178,6 +213,8 @@ async function onMainWindowUnload(_win: Window): Promise<void> {
 }
 
 function onShutdown(): void {
+  unregisterZInspirePickSaveTargetEndpoint();
+
   // PERF-FIX-1: Clear tracked timers before shutdown
   if (purgeTimer) {
     clearTimeout(purgeTimer);
@@ -202,6 +239,17 @@ function onShutdown(): void {
   localCache.flushWrites().catch(() => {
     // Ignore flush errors during shutdown
   });
+
+  // FTR-CUSTOM-COLUMNS: Unregister custom item tree columns
+  unregisterInspireItemTreeColumns();
+  if (itemTreePrefsObserverID) {
+    try {
+      Zotero.Prefs.unregisterObserver(itemTreePrefsObserverID);
+    } catch {
+      // Ignore unregister errors during shutdown
+    }
+    itemTreePrefsObserverID = undefined;
+  }
   // Remove addon object
   addon.data.alive = false;
   // @ts-ignore - Plugin instance is not typed
@@ -536,6 +584,76 @@ function updateLatexOptionsVisibility(doc: Document) {
   }
 }
 
+function updateRelatedPapersControls(doc: Document, syncFromPref = true) {
+  const enableCheckbox = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-related_papers_enable",
+  ) as HTMLInputElement | null;
+  const excludeReviewsCheckbox = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-related_papers_exclude_reviews",
+  ) as HTMLInputElement | null;
+  const maxResultsInput = doc.getElementById(
+    "zotero-prefpane-zoteroinspire-related_papers_max_results",
+  ) as HTMLInputElement | null;
+
+  const maxResultsDefault = 50;
+  const maxResultsMin = 10;
+  const maxResultsMax = 200;
+
+  const normalizeMaxResults = (value: unknown) => {
+    const raw =
+      typeof value === "number" && Number.isFinite(value)
+        ? Math.floor(value)
+        : maxResultsDefault;
+    return Math.min(maxResultsMax, Math.max(maxResultsMin, raw));
+  };
+
+  if (syncFromPref) {
+    const enabled = getPref("related_papers_enable") !== false;
+    const excludeReviews = getPref("related_papers_exclude_reviews") !== false;
+    const maxResults = normalizeMaxResults(getPref("related_papers_max_results"));
+
+    if (enableCheckbox) {
+      enableCheckbox.checked = enabled;
+    }
+    if (excludeReviewsCheckbox) {
+      excludeReviewsCheckbox.checked = excludeReviews;
+    }
+    if (maxResultsInput) {
+      maxResultsInput.value = String(maxResults);
+    }
+  } else {
+    const enabled = enableCheckbox?.checked ?? false;
+    setPref("related_papers_enable", enabled);
+
+    if (excludeReviewsCheckbox) {
+      setPref("related_papers_exclude_reviews", excludeReviewsCheckbox.checked);
+    }
+
+    if (maxResultsInput) {
+      const parsed = Number(maxResultsInput.value);
+      if (Number.isFinite(parsed)) {
+        const clamped = normalizeMaxResults(parsed);
+        maxResultsInput.value = String(clamped);
+        setPref("related_papers_max_results", clamped);
+      } else {
+        // Restore current pref value if the input is empty/invalid.
+        maxResultsInput.value = String(
+          normalizeMaxResults(getPref("related_papers_max_results")),
+        );
+      }
+    }
+  }
+
+  const enabled = enableCheckbox?.checked ?? getPref("related_papers_enable") !== false;
+  const disabled = !enabled;
+  if (excludeReviewsCheckbox) {
+    excludeReviewsCheckbox.disabled = disabled;
+  }
+  if (maxResultsInput) {
+    maxResultsInput.disabled = disabled;
+  }
+}
+
 /**
  * Update Preprint Watch controls.
  * - preprint_watch_enabled: main toggle (must be on for sub-options to work)
@@ -603,12 +721,32 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
         updatePreprintWatchControls(doc);
         updateCollabTagControls(doc);
         updateLatexOptionsVisibility(doc);
+        updateRelatedPapersControls(doc);
+        setTimeout(() => updateRelatedPapersControls(doc), 50);
         const enableCheckbox = doc.getElementById(
           "zotero-prefpane-zoteroinspire-local_cache_enable",
         ) as HTMLInputElement | null;
         enableCheckbox?.addEventListener("command", () => {
           updateLocalCacheControls(doc, false);
           updateEnrichSettingsDisplay(doc, true);
+        });
+        const relatedEnableCheckbox = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-related_papers_enable",
+        ) as HTMLInputElement | null;
+        relatedEnableCheckbox?.addEventListener("command", () => {
+          updateRelatedPapersControls(doc, false);
+        });
+        const relatedExcludeReviewsCheckbox = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-related_papers_exclude_reviews",
+        ) as HTMLInputElement | null;
+        relatedExcludeReviewsCheckbox?.addEventListener("command", () => {
+          updateRelatedPapersControls(doc, false);
+        });
+        const relatedMaxResultsInput = doc.getElementById(
+          "zotero-prefpane-zoteroinspire-related_papers_max_results",
+        ) as HTMLInputElement | null;
+        relatedMaxResultsInput?.addEventListener("change", () => {
+          updateRelatedPapersControls(doc, false);
         });
         const parseCheckbox = doc.getElementById(
           "zotero-prefpane-zoteroinspire-pdf_parse_refs_list",

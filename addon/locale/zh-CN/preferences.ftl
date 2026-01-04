@@ -34,6 +34,14 @@ extra-order-citations-first =
 extra-order-arxiv-first =
     .label = arXiv ID 优先
 
+pref-cites-column-exclude-self =
+    .label = Cites 列：不含自引
+pref-cites-column-exclude-self-desc = 在可用时使用不含自引的引用次数。若主列表未刷新，可切换集合或重启 Zotero。
+
+pref-arxiv-in-journal-abbrev =
+    .label = （兼容）将 arXiv 号写入 Journal Abbr.
+pref-arxiv-in-journal-abbrev-desc = 对未发表论文，将 `arXiv:...` 写入 Journal Abbreviation 字段。
+
 pref-arxiv-tag1 =
     .label = 添加 arXiv 主分类作为标签（如 hep-ph、nucl-th）
 
@@ -45,6 +53,20 @@ pref-chart-enable =
 pref-chart-enable-desc = 在面板顶部显示交互式统计图表（按年份/引用）。
 pref-chart-default-collapsed =
     .label = 默认折叠
+
+pref-related-papers-enable =
+    .label = 启用“相关论文”标签页
+pref-related-papers-enable-desc = 在面板中显示“相关”标签页，推荐与当前论文共享参考文献的论文。
+
+pref-related-papers-exclude-reviews =
+    .label = 排除综述论文
+pref-related-papers-exclude-reviews-desc = 在“相关”推荐中隐藏综述论文（INSPIRE document_type 包含 review，或发表于 RMP / Phys. Rep. / PPNP / Rep. Prog. Phys. / Annual Reviews 等综述期刊）。
+
+pref-related-papers-max-results-label = 相关论文显示数量：
+pref-related-papers-max-results-desc = “相关”标签页最多显示多少条（默认：50）。
+
+pref-citation-graph-max-results-label = 引用关系图显示数量：
+pref-citation-graph-max-results-desc = 引用关系图中参考文献/被引文献最多显示多少条（默认：25）。
 
 pref-keyboard-shortcuts-title = 键盘快捷键
 pref-keyboard-shortcuts-desc = 使用键盘导航和操作条目
@@ -155,5 +177,10 @@ pref-funding-extraction = 基金提取
 pref-funding-china-only =
     .label = 仅提取中国资助机构
 pref-funding-china-only-desc = 启用后仅提取中国资助机构的基金信息（国自然、中科院、科技部等）。禁用则提取所有资助者（包括 DOE、NSF、ERC 等）。
+
+pref-dev = 开发者
+pref-dev-panel-layout =
+    .label = 启用面板布局调试（Citing…）
+pref-dev-panel-layout-desc = 输出 [PANEL-LAYOUT] 调试日志，并在面板状态栏显示“Copy layout”按钮（用于定位溢出/遮挡问题）。
 
 pref-help = { $name } 版本 { $version } { $time }

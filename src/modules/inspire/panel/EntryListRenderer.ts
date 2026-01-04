@@ -306,8 +306,13 @@ export class EntryListRenderer {
     // Cache dark mode value for this render (avoid multiple isDarkMode() calls)
     const dark = ctx.darkMode ?? isDarkMode();
 
-    // Store entry ID for event delegation
+    // Store entry ID and recid for event delegation
     row.dataset.entryId = entry.id;
+    if (entry.recid) {
+      row.dataset.recid = entry.recid;
+    } else {
+      delete row.dataset.recid;
+    }
 
     // Update checkbox state
     const checkbox = row.querySelector(
@@ -431,7 +436,60 @@ export class EntryListRenderer {
       titleLink.textContent = entry.title + ";";
       titleLink.href = entry.inspireUrl || entry.fallbackUrl || "#";
       titleLink.style.wordBreak = "break-word";
-      titleLink.style.overflowWrap = "break-word";
+      // Make long titles wrap even when they contain long unbroken segments
+      // (and even if host CSS sets `a { white-space: nowrap; padding: … }`).
+      titleLink.style.overflowWrap = "anywhere";
+      // Force wrapping even if host CSS applies `white-space: nowrap` to links.
+      titleLink.style.whiteSpace = "normal";
+      // Reset global Zotero anchor padding that can otherwise eat horizontal space.
+      titleLink.style.padding = "0";
+      titleLink.style.margin = "0";
+      titleLink.style.display = "inline";
+      titleLink.style.maxWidth = "100%";
+    }
+
+    // FTR-RELATED-PAPERS: Render shared-reference badge (only in related mode)
+    const relatedBadge = row.querySelector(
+      ".zinspire-ref-entry__related-badge",
+    ) as HTMLElement | null;
+    if (relatedBadge) {
+      const sharedCount = entry.relatedSharedRefCount ?? 0;
+      if (ctx.viewMode === "related" && sharedCount > 0) {
+        relatedBadge.textContent = `↔${sharedCount}`;
+
+        const baseTitle = getString("references-panel-related-badge-tooltip", {
+          args: { count: sharedCount },
+        });
+        const titles =
+          Array.isArray(entry.relatedSharedRefTitles) &&
+          entry.relatedSharedRefTitles.length
+            ? `\n${entry.relatedSharedRefTitles.join("\n")}`
+            : "";
+        relatedBadge.title = baseTitle + titles;
+
+        relatedBadge.style.display = "inline-flex";
+        relatedBadge.style.alignItems = "center";
+        relatedBadge.style.justifyContent = "center";
+        relatedBadge.style.marginLeft = "6px";
+        relatedBadge.style.padding = "0 6px";
+        relatedBadge.style.height = "16px";
+        relatedBadge.style.borderRadius = "8px";
+        relatedBadge.style.fontSize = "10px";
+        relatedBadge.style.lineHeight = "16px";
+        relatedBadge.style.whiteSpace = "nowrap";
+        relatedBadge.style.userSelect = "none";
+        relatedBadge.style.background = dark
+          ? "rgba(148, 163, 184, 0.18)"
+          : "var(--material-mix-quinary, #f1f5f9)";
+        relatedBadge.style.color = "var(--fill-secondary, #64748b)";
+        relatedBadge.style.border = dark
+          ? "1px solid rgba(148, 163, 184, 0.25)"
+          : "1px solid var(--fill-quinary, #d1d5db)";
+      } else {
+        relatedBadge.textContent = "";
+        relatedBadge.title = "";
+        relatedBadge.style.display = "none";
+      }
     }
 
     // Update meta (journal, DOI, arXiv links)

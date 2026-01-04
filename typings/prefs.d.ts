@@ -12,17 +12,25 @@ declare namespace _ZoteroTypes {
       "tag_norecid": string;
       "tag_enable": boolean;
       "extra_order": string;
+      "cites_column_exclude_self": boolean;
+      "arxiv_in_journal_abbrev": boolean;
       "arxiv_tag_enable": boolean;
       "max_authors": number;
       "reader_auto_reopen": boolean;
       "chart_enable": boolean;
       "chart_default_collapsed": boolean;
+      "related_papers_enable": boolean;
+      "related_papers_exclude_reviews": boolean;
+      "related_papers_max_results": number;
+      "citation_graph_max_results": number;
+      "external_token": string;
       "latex_render_mode": string;
       "search_history_days": number;
       "pdf_fuzzy_citation": boolean;
       "pdf_parse_refs_list": boolean;
       "pdf_force_mapping_on_mismatch": boolean;
       "quick_filters_last_used": string;
+      "debug_panel_layout": boolean;
       "local_cache_enable": boolean;
       "local_cache_ttl_hours": number;
       "local_cache_show_source": boolean;
@@ -46,6 +54,9 @@ declare namespace _ZoteroTypes {
       "collab_tag_auto": boolean;
       "collab_tag_template": string;
       "funding_china_only": boolean;
+      "favorite_authors": string;
+      "favorite_papers": string;
+      "favorite_presentations": string;
     };
   }
 }

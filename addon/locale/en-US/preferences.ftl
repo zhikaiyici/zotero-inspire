@@ -34,6 +34,14 @@ extra-order-citations-first =
 extra-order-arxiv-first =
     .label = arXiv ID first
 
+pref-cites-column-exclude-self =
+    .label = Cites column: exclude self-citations
+pref-cites-column-exclude-self-desc = Use citation counts without self-citations (when available). If the items list doesn't update, switch collections or restart Zotero.
+
+pref-arxiv-in-journal-abbrev =
+    .label = Legacy: write arXiv ID into Journal Abbr.
+pref-arxiv-in-journal-abbrev-desc = For unpublished papers, store `arXiv:...` in the Journal Abbreviation field.
+
 pref-arxiv-tag1 =
     .label = Add arXiv primary category as tag (e.g., hep-ph, nucl-th)
 
@@ -45,6 +53,20 @@ pref-chart-enable =
 pref-chart-enable-desc = Show interactive statistics chart (by year/citations) at the top of the panel.
 pref-chart-default-collapsed =
     .label = Collapsed by default
+
+pref-related-papers-enable =
+    .label = Enable Related Papers tab
+pref-related-papers-enable-desc = Show a Related tab that recommends papers sharing references with the current paper.
+
+pref-related-papers-exclude-reviews =
+    .label = Exclude review articles
+pref-related-papers-exclude-reviews-desc = Hide review articles (document type: review) and papers in major review journals (RMP, Phys. Rep., PPNP, Rep. Prog. Phys., Annual Reviews) in Related recommendations.
+
+pref-related-papers-max-results-label = Related papers to show:
+pref-related-papers-max-results-desc = Maximum number of items displayed in the Related tab (default: 50).
+
+pref-citation-graph-max-results-label = Citation graph papers to show:
+pref-citation-graph-max-results-desc = Maximum number of references and cited-by papers shown in the citation graph (default: 25).
 
 pref-keyboard-shortcuts-title = Keyboard Shortcuts
 pref-keyboard-shortcuts-desc = Navigate and interact with entries using keyboard
@@ -155,5 +177,10 @@ pref-funding-extraction = Funding Extraction
 pref-funding-china-only =
     .label = Extract only Chinese funding agencies
 pref-funding-china-only-desc = When enabled, only extract funding info from Chinese agencies (NSFC, CAS, MoST, etc.). Disable to extract all funders including DOE, NSF, ERC, etc.
+
+pref-dev = Developer
+pref-dev-panel-layout =
+    .label = Enable panel layout debug (Citing…)
+pref-dev-panel-layout-desc = Logs [PANEL-LAYOUT] lines and shows a "Copy layout" button in the panel header (for debugging).
 
 pref-help = { $name } Build { $version } { $time }

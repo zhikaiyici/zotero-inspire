@@ -61,9 +61,14 @@ Select an item with an INSPIRE record, then find the **INSPIRE** section in the 
 | ----------------------- | ---------------------------------------------------------------------------------------------------------- |
 | **References**    | Papers cited by this item                                                                                  |
 | **Cited by**      | Papers that cite this item                                                                                 |
+| **Related**       | Recommended papers based on shared references (bibliographic coupling)                                     |
 | **Entry Cited**   | Papers citing a specific reference, appears only after clicking the `Cited by ...` button below an entry |
 | **Author Papers** | All papers by a clicked author, appears only after clicking an author name                                 |
 | **🔍 Search**     | INSPIRE search results                                                                                     |
+| **⭐ Favorites**   | Your favorite authors and papers                                                                           |
+
+Note: Related-paper discovery ignores the PDG "Review of Particle Physics" reference as a seed anchor (it is cited by most HEP papers and usually hurts relevance).
+Citation Graph: a 1-hop visualization (refs/cited-by capped at 50); click nodes to open INSPIRE, right-click to expand (re-root).
 
 ### Search INSPIRE
 
@@ -77,6 +82,18 @@ inspire: j Phys.Rev.D       → Search by journal
 ```
 
 **From the panel (more convenient)**: Click the 🔍 Search tab and enter your query directly (no prefix needed). Search history is saved and accessible via dropdown (use right or tab to accept inline hint from history records).
+
+### Custom Columns (Main Item List)
+
+Zotero's main item list supports two additional columns:
+
+- **`Cites`** — Citation counts from INSPIRE (stored in `Extra` by this plugin). Default: includes self-citations (configurable).
+- **`arXiv`** — arXiv ID extracted locally (from Journal Abbr. / Extra / URL / DOI).
+
+Enable them via the column picker in the items list header. Preferences:
+
+- **Cites column: exclude self-citations** — Switch between total vs. without self-citations. If the list doesn't update immediately, switch collections or restart Zotero.
+- **Legacy: write arXiv ID into Journal Abbr.** — Disabled by default now that an `arXiv` column exists (kept for backward compatibility).
 
 ---
 
@@ -111,18 +128,28 @@ inspire: j Phys.Rev.D       → Search by journal
 | Click citation count | View citing papers       |
 | Click 📋             | Copy BibTeX              |
 | Click T              | Copy citation key        |
+| Right-click entry    | Context menu (Favorites) |
 
 ### Filtering & Sorting
 
 - **Text filter**: Type keywords to filter entries; supports multi-word, phrase search (`"exact phrase"`), journal abbreviations (`"PRL"`, `"PRD"`, `"JHEP"`, etc.), and international characters (ä→ae)
 - **Quick filters**: Click the Filters button for presets (high citations, recent papers, published only, etc.)
-- **Sort options**: INSPIRE order, newest first, or most cited first
+- **Sort options**: INSPIRE order, relevance (Related tab), newest first, or most cited first
 - **Chart filters**: Click bars in the statistics chart to filter by year or citation range; Ctrl/Cmd+click for multi-select
 
 ### Navigation
 
 - **Back/Forward**: Use the ← → buttons to navigate between previously viewed items, like browser history
 - **Keyboard**: Arrow keys, Home/End, and vim-style j/k navigation (see Keyboard Shortcuts)
+
+### Favorites
+
+The **⭐ Favorites** tab lets you quickly access your favorite authors, papers, and presentations:
+
+- **Favorite Authors**: Click the star (☆/★) button in the Author Papers tab or author preview card to add authors to favorites
+- **Favorite Papers & Presentations**: Right-click any entry within the INSPIRE References panel and select "Add paper to favorites" (or "Add presentation to favorites"), or use the right-click menu in Zotero's main window. Items of type "Presentation" are automatically categorized under "Favorite Presentations".
+- **Quick Access**: All favorites are displayed in the Favorites tab with drag-and-drop reordering within each category (Authors, Papers, Presentations)
+- **Filtering**: Use the text filter to search within your favorites
 
 ### Batch Operations
 

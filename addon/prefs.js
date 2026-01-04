@@ -4,17 +4,26 @@ pref("__prefsPrefix__.citekey", "inspire");
 pref("__prefsPrefix__.tag_norecid", "\u26D4 No INSPIRE recid found");
 pref("__prefsPrefix__.tag_enable", false);
 pref("__prefsPrefix__.extra_order", "citations_first");
+pref("__prefsPrefix__.cites_column_exclude_self", false); // Cites column uses w/o-self citation count
+pref("__prefsPrefix__.arxiv_in_journal_abbrev", false); // Legacy: write arXiv ID to Journal Abbreviation
 pref("__prefsPrefix__.arxiv_tag_enable", false);
 pref("__prefsPrefix__.max_authors", 3);
 pref("__prefsPrefix__.reader_auto_reopen", false);
 pref("__prefsPrefix__.chart_enable", true);
 pref("__prefsPrefix__.chart_default_collapsed", true);
+pref("__prefsPrefix__.related_papers_enable", true); // FTR-RELATED-PAPERS: enable Related tab
+pref("__prefsPrefix__.related_papers_exclude_reviews", true); // FTR-RELATED-PAPERS: exclude review articles (default on)
+pref("__prefsPrefix__.related_papers_max_results", 50); // FTR-RELATED-PAPERS: max related papers to display
+pref("__prefsPrefix__.citation_graph_max_results", 25); // FTR-CITATION-GRAPH: max references/cited-by shown per side (global across seeds)
+pref("__prefsPrefix__.external_token", ""); // External integrations: connector auth token (generated on first startup)
 pref("__prefsPrefix__.latex_render_mode", "katex"); // LaTeX rendering: "unicode" | "katex"
 pref("__prefsPrefix__.search_history_days", 30);
 pref("__prefsPrefix__.pdf_fuzzy_citation", false); // Aggressive citation detection for broken PDF text layers
 pref("__prefsPrefix__.pdf_parse_refs_list", false); // Parse PDF reference list to fix label mapping (for multi-citation references)
 pref("__prefsPrefix__.pdf_force_mapping_on_mismatch", true); // When PDF/INSPIRE reference counts diverge, force PDF mapping and skip index fallback
 pref("__prefsPrefix__.quick_filters_last_used", "[]");
+// Developer/debug toggles
+pref("__prefsPrefix__.debug_panel_layout", false); // Enable panel layout debug logs/UI
 // Local cache settings
 pref("__prefsPrefix__.local_cache_enable", true);
 pref("__prefsPrefix__.local_cache_ttl_hours", 24);
@@ -43,3 +52,9 @@ pref("__prefsPrefix__.collab_tag_auto", false); // Auto-add tags when updating/i
 pref("__prefsPrefix__.collab_tag_template", "{name}"); // Tag format template ({name} = collaboration name)
 // Funding extraction settings (FTR-FUNDING-EXTRACTION)
 pref("__prefsPrefix__.funding_china_only", true); // Only extract Chinese funding agencies (NSFC, CAS, MoST, etc.)
+// Favorite authors (FTR-FAVORITE-AUTHORS)
+pref("__prefsPrefix__.favorite_authors", "[]"); // JSON array of FavoriteAuthor objects
+// Favorite papers (FTR-FAVORITE-PAPERS)
+pref("__prefsPrefix__.favorite_papers", "[]"); // JSON array of FavoritePaper objects
+// Favorite presentations (FTR-FAVORITE-PRESENTATIONS)
+pref("__prefsPrefix__.favorite_presentations", "[]"); // JSON array of FavoritePresentation objects

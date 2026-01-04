@@ -147,6 +147,56 @@ export {
   enrichReferencesEntries,
 } from "./referencesService";
 
+// Re-export related papers service (FTR-RELATED-PAPERS)
+export {
+  RELATED_PAPERS_ALGORITHM_VERSION,
+  selectRelatedAnchors,
+  fetchRelatedPapersEntries,
+  type RelatedPapersParams,
+  type RelatedPapersProgress,
+  type FetchRelatedPapersOptions,
+  type RelatedAnchor,
+} from "./relatedPapersService";
+
+// Re-export citation graph service (FTR-CITATION-GRAPH)
+export {
+  fetchCitationGraphOneHop,
+  type CitationGraphSortMode,
+  type CitationGraphNode,
+  type CitationGraphOneHopResult,
+  type FetchCitationGraphOptions,
+} from "./citationGraphService";
+
+// Re-export multi-seed citation graph service (Phase 3.1)
+export {
+  fetchMultiSeedCitationGraph,
+  detectSeedEdges,
+} from "./citationGraphMultiSeedService";
+
+export type {
+  MultiSeedGraphResult,
+  SeedEdge,
+  CitationGraphSaveData,
+  CitationGraphNodeData,
+  CitationGraphEdgeData,
+  CitationGraphEdgeType,
+  CitationGraphNodeKind,
+} from "./types";
+
+// Re-export related papers co-citation helpers
+export {
+  computeCoCitationBlendWeight,
+  computeNormalizedCoCitation,
+} from "./relatedCoCitationUtils";
+
+// Re-export review detection utilities (shared by Related + filters)
+export {
+  isPdgReviewOfParticlePhysicsTitle,
+  isReviewDocumentType,
+  isReviewJournal,
+  isReviewArticleEntry,
+} from "./reviewUtils";
+
 // Re-export smart update service (FTR-SMART-UPDATE)
 export {
   type FieldCategory,
@@ -226,6 +276,13 @@ export {
   type CollabTagResult,
   type CollabTagProgressCallback,
 } from "./collabTagService";
+
+// Re-export Item Tree custom columns (FTR-CUSTOM-COLUMNS)
+export {
+  registerInspireItemTreeColumns,
+  unregisterInspireItemTreeColumns,
+  refreshInspireItemTreeColumns,
+} from "./itemTreeColumns";
 
 // Re-export PDF annotate module (FTR-PDF-ANNOTATE)
 export {
@@ -395,6 +452,8 @@ export {
   buildEntryFromSearchHit,
   type SearchProgressCallback,
   type SearchFetchOptions,
+  // CitationGraphDialog (FTR-CITATION-GRAPH)
+  CitationGraphDialog,
 } from "./panel";
 
 // Re-export funding module (FTR-FUNDING-EXTRACTION)
