@@ -691,6 +691,7 @@ export class ZInspireReferencePane {
       margin-right: 6px;
       border: none;
       background: transparent;
+      color: ${dark ? "var(--fill-secondary, #9ca3af)" : "var(--fill-secondary, #64748b)"};
       border-radius: 6px;
       padding: 0;
       user-select: none;
