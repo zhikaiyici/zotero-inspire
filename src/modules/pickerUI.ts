@@ -1200,6 +1200,7 @@ export function showTargetPickerUI(
     const tagsWrapper = doc.createElement("div");
     tagsWrapper.classList.add("zinspire-collection-picker__tags-wrapper");
     tagsWrapper.style.position = "relative";
+    tagsWrapper.style.right = "4px";
     tagsWrapper.style.width = "100%";
 
     const tagsInput = doc.createElement("input");
@@ -1223,8 +1224,8 @@ export function showTargetPickerUI(
       "zinspire-collection-picker__tags-autocomplete",
     );
     tagsSuggestionPanel.style.position = "absolute";
-    tagsSuggestionPanel.style.left = "0";
-    tagsSuggestionPanel.style.right = "0";
+    tagsSuggestionPanel.style.left = "4px";
+    tagsSuggestionPanel.style.right = "-4px";
     tagsSuggestionPanel.style.top = "calc(100% + 2px)";
     tagsSuggestionPanel.style.backgroundColor = colors.sectionBg;
     tagsSuggestionPanel.style.color = colors.textPrimary;
@@ -1575,7 +1576,7 @@ export function showTargetPickerUI(
     okBtn.textContent = getString("references-panel-picker-confirm");
     okBtn.style.padding = "4px 12px";
     okBtn.style.minWidth = "60px";
-    okBtn.style.backgroundColor = colors.accentBlue;
+    okBtn.style.background = colors.accentBlue;
     okBtn.style.color = "#fff";
     okBtn.style.border = `1px solid ${colors.accentBlue}`;
     okBtn.style.borderRadius = "4px";

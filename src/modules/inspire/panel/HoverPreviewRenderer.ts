@@ -709,7 +709,7 @@ export class HoverPreviewRenderer {
 
     if (isPrimary) {
       Object.assign(baseStyle, {
-        backgroundColor: "var(--accent-color, #3b82f6)",
+        background: "var(--accent-color, #3b82f6)",
         color: "#fff",
         border: "1px solid var(--accent-color, #3b82f6)",
       });

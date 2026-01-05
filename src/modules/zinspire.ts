@@ -687,13 +687,12 @@ export class ZInspireReferencePane {
       align-items: center;
       justify-content: center;
       width: 28px;
-      height: 24px;
+      height: 28px;
       margin-right: 6px;
-      border: 1px solid ${dark ? "var(--fill-quinary, #3f3f46)" : "var(--fill-quinary, #d1d5db)"};
-      background: ${dark ? "var(--material-sidepane, #1f1f22)" : "var(--material-background, #fff)"};
-      color: ${dark ? "var(--fill-secondary, #9ca3af)" : "var(--fill-secondary, #64748b)"};
+      border: none;
+      background: transparent;
       border-radius: 6px;
-      cursor: pointer;
+      padding: 0;
       user-select: none;
       flex: 0 0 auto;
     `;
@@ -735,11 +734,24 @@ export class ZInspireReferencePane {
       }
     };
 
+    // Define hover event handlers
+    const onMouseEnter = () => {
+      const currentDark = isDarkMode();
+      btn.style.background = currentDark ? "rgba(255, 255, 255, 0.06)" : "rgba(0, 0, 0, 0.05)";
+    };
+    const onMouseLeave = () => {
+      btn.style.background = "transparent";
+    };
+
     btn.addEventListener("click", onClick);
+    btn.addEventListener("mouseenter", onMouseEnter);
+    btn.addEventListener("mouseleave", onMouseLeave);
     parent.insertBefore(btn, searchEl);
     this.mainToolbarGraphButton = btn;
     this.mainToolbarGraphButtonCleanup = () => {
       btn.removeEventListener("click", onClick);
+      btn.removeEventListener("mouseenter", onMouseEnter);
+      btn.removeEventListener("mouseleave", onMouseLeave);
       btn.remove();
     };
   }

@@ -1892,7 +1892,7 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
             return;
           }
           await copyToClipboard(bibtex);
-          this.showToast(getString("copy-success-bibtex") || "Copied BibTeX");
+          this.showToast(getString("copy-success-bibtex", { args: { count: 1 } }) || "Copied BibTeX");
         },
         onCopyTexkey: async (entry) => {
           const recid = entry.recid;
@@ -1911,7 +1911,7 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
           }
           await copyToClipboard(resolved);
           this.showToast(
-            getString("copy-success-citation-key") || "Copied citation key",
+            getString("copy-success-citation-key", { args: { count: 1 } }) || "Copied citation key",
           );
         },
         isFavorite: (entry) =>
