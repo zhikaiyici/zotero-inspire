@@ -6,7 +6,7 @@ menuitem-submenulabel0 = With abstracts
 menuitem-submenulabel1 = Without abstracts
 menuitem-submenulabel2 = Citation counts only
 menuitem-download-cache = Download references cache
-menuitem-citation-graph-merge = Combined Citation Graph…
+menuitem-citation-graph-merge = Combined citation graph
 menuitem-cancel-update = Cancel update
 
 download-cache-progress-title = Downloading references cache
@@ -467,7 +467,8 @@ smart-update-field-doi = DOI
 smart-update-field-arxiv = arXiv
 smart-update-field-citations = Citations
 smart-update-field-citations-wo-self = Citations (w/o self)
-smart-update-field-citekey = Citation Key
+smart-update-field-citekey = Citation Key (in extra)
+smart-update-field-citationKey = Citation Key
 smart-update-field-collaboration = Collaboration
 smart-update-field-authors = Authors
 

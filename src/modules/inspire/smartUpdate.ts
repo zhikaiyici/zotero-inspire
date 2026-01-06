@@ -869,6 +869,18 @@ export function compareItemWithInspire(
         isSignificant: isEmptyValue(localCitekey),
       });
     }
+
+    // Citation key field comparison
+    const localCitationKey = item.getField("citationKey") as string;
+    if (!valuesAreEqual(localCitationKey, metaInspire.citekey)) {
+      changes.push({
+        field: "citationKey",
+        category: "identifiers",
+        localValue: localCitationKey,
+        inspireValue: metaInspire.citekey,
+        isSignificant: isEmptyValue(localCitationKey),
+      });
+    }
   }
 
   // Creators comparison
@@ -991,6 +1003,7 @@ export function getFieldDisplayName(field: string): string {
     citations: getString("smart-update-field-citations"),
     citationsWithoutSelf: getString("smart-update-field-citations-wo-self"),
     citekey: getString("smart-update-field-citekey"),
+    citationKey: getString("smart-update-field-citationKey"),
     collaboration: getString("smart-update-field-collaboration"),
     creators: getString("smart-update-field-authors"),
   };
@@ -1143,7 +1156,7 @@ export async function showSmartUpdatePreviewDialog(
     titleRow.style.borderBottom = "1px solid var(--fill-quinary, #eee)";
     // Use escapeHtml to prevent syntax errors from HTML tags in titles (e.g., <span class="nocase">)
     const cleanTitle = escapeHtml(stripHtmlTags(diff.itemTitle));
-    titleRow.innerHTML = `<strong>${getString("smart-update-preview-header", { args: { title: "" } }).replace(": ", ":")}</strong> ${truncateText(cleanTitle, 60)}`;
+    titleRow.innerHTML = `<strong>${getString("smart-update-preview-header", { args: { title: truncateText(cleanTitle, 50) } })}</strong>`;
     panel.appendChild(titleRow);
 
     // Info text
@@ -1196,7 +1209,7 @@ export async function showSmartUpdatePreviewDialog(
     applyBtn.style.minWidth = "80px";
     applyBtn.style.border = "none";
     applyBtn.style.borderRadius = "4px";
-    applyBtn.style.backgroundColor = "#0066cc";
+    applyBtn.style.background = "#0066cc";
     applyBtn.style.color = "#fff";
     applyBtn.style.cursor = "pointer";
     applyBtn.style.fontSize = "13px";

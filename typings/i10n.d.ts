@@ -521,6 +521,7 @@ export type FluentMessageId =
   | 'smart-update-field-citations'
   | 'smart-update-field-citations-wo-self'
   | 'smart-update-field-citekey'
+  | 'smart-update-field-citationKey'
   | 'smart-update-field-collaboration'
   | 'smart-update-field-date'
   | 'smart-update-field-doi'

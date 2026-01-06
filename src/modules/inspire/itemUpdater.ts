@@ -2303,7 +2303,7 @@ export async function setInspireMeta(
       if (metaInspire.title && !item.getField("title")) {
         item.setField("title", metaInspire.title);
       }
-      if (metaInspire.creators && !item.getCreators()) {
+      if (metaInspire.creators && item.getCreators().length === 0) {
         // Check for protected author names
         const protectionConfig = getFieldProtectionConfig();
         const localCreators = item.getCreators() as _ZoteroTypes.Item.Creator[];
@@ -2313,6 +2313,10 @@ export async function setInspireMeta(
           protectionConfig.protectedNames,
         );
         item.setCreators(mergedCreators ?? metaInspire.creators);
+      }
+
+      if (metaInspire.citekey && !item.getField("citationKey")){
+        item.setField("citationKey", metaInspire.citekey);
       }
 
       if (metaInspire.arxiv) {
@@ -2651,6 +2655,11 @@ export async function setInspireMetaSelective(
         } else {
           extra += "\nCitation Key: " + metaInspire.citekey;
         }
+      }
+
+      // Citation key field
+      if (allowedFields.has("citationKey") && metaInspire.citekey) {
+          item.setField("citationKey", metaInspire.citekey);
       }
     }
 

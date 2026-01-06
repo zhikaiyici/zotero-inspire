@@ -6,6 +6,7 @@ menuitem-submenulabel0 = 包含摘要
 menuitem-submenulabel1 = 不含摘要
 menuitem-submenulabel2 = 仅引用次数
 menuitem-download-cache = 下载引用缓存
+menuitem-citation-graph-merge = 联合引用关系图
 menuitem-cancel-update = 取消更新
 
 download-cache-progress-title = 正在下载引用缓存
@@ -382,6 +383,7 @@ references-panel-cache-source-local-expired = 来自过期缓存（{ $age } 小�
 menuitem-copy-bibtex = 复制 BibTeX
 menuitem-copy-inspire-link = 复制 INSPIRE 链接
 menuitem-copy-citation-key = 复制引用键
+menuitem-copy-inspire-link-md = 复制 INSPIRE 链接 (Markdown)
 menuitem-copy-zotero-link = 复制 Zotero 链接
 copy-success-bibtex =
   { $count ->
@@ -462,7 +464,8 @@ smart-update-field-doi = DOI
 smart-update-field-arxiv = arXiv
 smart-update-field-citations = 引用次数
 smart-update-field-citations-wo-self = 引用次数（不含自引）
-smart-update-field-citekey = 引用键
+smart-update-field-citekey = 引用键（其他字段）
+smart-update-field-citationKey = 引用关键词
 smart-update-field-collaboration = 合作组
 smart-update-field-authors = 作者
 
