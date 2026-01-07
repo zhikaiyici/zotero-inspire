@@ -1210,7 +1210,6 @@ export function showTargetPickerUI(
     const tagsWrapper = doc.createElement("div");
     tagsWrapper.classList.add("zinspire-collection-picker__tags-wrapper");
     tagsWrapper.style.position = "relative";
-    tagsWrapper.style.right = "4px";
     tagsWrapper.style.width = "100%";
     // FIX-TAGS-ALIGNMENT: Ensure consistent box sizing and no default margin
     tagsWrapper.style.boxSizing = "border-box";
@@ -1239,8 +1238,8 @@ export function showTargetPickerUI(
       "zinspire-collection-picker__tags-autocomplete",
     );
     tagsSuggestionPanel.style.position = "absolute";
-    tagsSuggestionPanel.style.left = "4px";
-    tagsSuggestionPanel.style.right = "-4px";
+    tagsSuggestionPanel.style.left = "8px";
+    tagsSuggestionPanel.style.right = "8px";
     tagsSuggestionPanel.style.top = "calc(100% + 2px)";
     tagsSuggestionPanel.style.backgroundColor = colors.sectionBg;
     tagsSuggestionPanel.style.color = colors.textPrimary;
