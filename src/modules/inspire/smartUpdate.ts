@@ -681,12 +681,12 @@ function extractCitationsFromExtra(extra: string): {
     withoutSelf: null as number | null,
   };
 
-  const totalMatch = extra.match(/^(\d+)\s+citations\s+\(INSPIRE/m);
+  const totalMatch = extra.match(/^(\d+)\s+citations?\s+\(INSPIRE/m);
   if (totalMatch) {
     result.total = parseInt(totalMatch[1], 10);
   }
 
-  const withoutSelfMatch = extra.match(/^(\d+)\s+citations\s+w\/o\s+self/m);
+  const withoutSelfMatch = extra.match(/^(\d+)\s+citations?\s+w\/o\s+self/m);
   if (withoutSelfMatch) {
     result.withoutSelf = parseInt(withoutSelfMatch[1], 10);
   }

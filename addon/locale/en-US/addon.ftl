@@ -256,9 +256,29 @@ references-panel-author-click-hint = Click to view papers by { $author }
 references-panel-author-profile-loading = Loading author profile...
 references-panel-author-profile-unavailable = Author profile not available
 references-panel-author-stats-loading = Loading statistics...
-references-panel-author-stats = { $papers } papers · { $citations } citations · h-index: { $h }
-references-panel-author-stats-no-self = { $papers } papers · { $citations } citations (no self) · h-index: { $h }
-references-panel-author-stats-partial = Based on { $count } loaded papers
+references-panel-author-stats =
+  { $papers ->
+    [one] 1 paper
+   *[other] { $papers } papers
+  } · 
+  { $citations ->
+    [one] 1 citation
+   *[other] { $citations } citations
+  } · h-index: { $h }
+references-panel-author-stats-no-self =
+  { $papers ->
+    [one] 1 paper
+   *[other] { $papers } papers
+  } · 
+  { $citations ->
+    [one] 1 citation (no self)
+   *[other] { $citations } citations (no self)
+  } · h-index: { $h }
+references-panel-author-stats-partial = Based on 
+  { $count ->
+    [one] 1 loaded paper
+   *[other] { $papers } loaded papers 
+  }
 references-panel-author-advisors = Advisors
 references-panel-author-emails = Emails
 references-panel-author-orcid-tooltip = Open ORCID profile

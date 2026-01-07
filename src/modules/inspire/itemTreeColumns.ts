@@ -114,7 +114,7 @@ function parseInspireCitationsFromExtra(
   const lines = extra.split(/\r?\n/);
   for (const line of lines) {
     if (!line) continue;
-    const match = line.match(/^(\d+)\s+citations\b.*$/i);
+    const match = line.match(/^(\d+)\s+citations?\b.*$/i);
     if (!match) continue;
     const count = Number.parseInt(match[1], 10);
     if (!Number.isFinite(count)) continue;

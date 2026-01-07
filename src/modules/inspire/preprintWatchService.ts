@@ -1140,7 +1140,7 @@ function setCitationsInExtra(
 
   // Check if citations are unchanged
   const topLinesMatch = extra.match(
-    /^(\d+)\scitations\s\(INSPIRE\s[\d/-]+\)\n(\d+)\scitations\sw\/o\sself\s\(INSPIRE\s[\d/-]+\)\n/,
+    /^(\d+)\scitations?\s\(INSPIRE\s[\d/-]+\)\n(\d+)\scitations?\sw\/o\sself\s\(INSPIRE\s[\d/-]+\)\n/,
   );
   if (topLinesMatch) {
     const topCitation = Number(topLinesMatch[1]);
@@ -1154,7 +1154,7 @@ function setCitationsInExtra(
   }
 
   // Get existing citation values
-  const temp = extra.match(/^\d+\scitations/gm);
+  const temp = extra.match(/^\d+\scitations?/gm);
   let existingCitations: number[] = [0, 0];
   if (temp !== null && temp.length >= 2) {
     existingCitations = temp.map((e: any) => Number(e.replace(" citations", "")));
@@ -1163,7 +1163,7 @@ function setCitationsInExtra(
   const dateMatch = extra.match(/INSPIRE\s([\d/-]+)/);
   const existingDate = dateMatch ? dateMatch[1] : today;
 
-  extra = extra.replace(/^.*citations.*$\n?/gm, "");
+  extra = extra.replace(/^.*citations?.*$\n?/gm, "");
   extra = extra.replace(/^\n+/, "");
 
   const woSelf = citation_count_wo_self_citations ?? 0;
@@ -1173,13 +1173,13 @@ function setCitationsInExtra(
     woSelf === existingCitations[1]
   ) {
     extra =
-      `${citation_count} citations (INSPIRE ${existingDate})\n` +
-      `${woSelf} citations w/o self (INSPIRE ${existingDate})\n` +
+      `${citation_count} ${citation_count === 1 ? "citation" : "citations"} (INSPIRE ${existingDate})\n` +
+      `${woSelf} ${woSelf === 1 ? "citation" : "citations"} w/o self (INSPIRE ${existingDate})\n` +
       extra;
   } else {
     extra =
-      `${citation_count} citations (INSPIRE ${today})\n` +
-      `${woSelf} citations w/o self (INSPIRE ${today})\n` +
+      `${citation_count} ${citation_count === 1 ? "citation" : "citations"} (INSPIRE ${today})\n` +
+      `${woSelf} ${woSelf === 1 ? "citation" : "citations"} w/o self (INSPIRE ${today})\n` +
       extra;
   }
 
@@ -1203,7 +1203,7 @@ function reorderExtraFieldsPreprint(extra: string): string {
 
   const lines = extra.split("\n");
   for (const line of lines) {
-    if (line.match(/^\d+\scitations/)) {
+    if (line.match(/^\d+\scitations?/)) {
       citationLines.push(line);
     } else if (line.match(/^(arXiv:|_eprint:)/i)) {
       arxivLines.push(line);

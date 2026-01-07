@@ -141,12 +141,12 @@ export class ZInspire {
           if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
             progressWindowNoRecid.createLine({
               icon: iconCross,
-              text: `${this.toUpdate} ${this.toUpdate > 1 ? " items" : " item"} processed.\nNo INSPIRE recid was found for ${this.noRecidCount} ${itemWord}. Tagged with '${getPref("tag_norecid")}'.`,
+              text: `${this.toUpdate} ${this.toUpdate === 1 ? " items" : " item"} processed.\nNo INSPIRE recid was found for ${this.noRecidCount} ${itemWord}. Tagged with '${getPref("tag_norecid")}'.`,
             });
           } else {
             progressWindowNoRecid.createLine({
               icon: iconCross,
-              text: `${this.toUpdate} ${this.toUpdate > 1 ? " items" : " item"} processed.\nNo INSPIRE recid was found for ${this.noRecidCount} ${itemWord}.`,
+              text: `${this.toUpdate} ${this.toUpdate === 1 ? " items" : " item"} processed.\nNo INSPIRE recid was found for ${this.noRecidCount} ${itemWord}.`,
             });
           }
           progressWindowNoRecid.show();
@@ -160,7 +160,7 @@ export class ZInspire {
           progressWindowFinished.changeHeadline("INSPIRE metadata retrieved");
           progressWindowFinished.createLine({
             icon: PLUGIN_ICON,
-            text: `INSPIRE metadata updated for ${this.toUpdate} ${this.toUpdate > 1 ? " items" : " item"}.`,
+            text: `INSPIRE metadata updated for ${this.toUpdate} ${this.toUpdate === 1 ? " items" : " item"}.`,
           });
           progressWindowFinished.show();
           progressWindowFinished.startCloseTimer(3000);
@@ -181,11 +181,11 @@ export class ZInspire {
           // } else if (operation === "citations") {
           this.progressWindow.createLine({
             icon: unUpdated > 0 ? iconCross : PLUGIN_ICON,
-            text: this.toUpdate + (this.toUpdate > 1 ? " items" : " item") + " processed.\n" +
-              (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter > 1 ? " items.\n" : " item.\n") : "") +
-              (this.CrossRefcounter > 0 ? "CrossRef citations updated for " + this.CrossRefcounter + (this.CrossRefcounter > 1 ? " items.\n" : " item.\n") : "") +
-              (this.CNKIcounter > 0 ? "CNKI citations updated for " + this.CNKIcounter + (this.CNKIcounter > 1 ? " items.\n" : " item.\n") : "") +
-              (unUpdated > 0 ? "No citation data was found for " + unUpdated + (unUpdated > 1 ? " items." : " item.") : ""),
+            text: this.toUpdate + (this.toUpdate === 1 ? " items" : " item") + " processed.\n" +
+              (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
+              (this.CrossRefcounter > 0 ? "CrossRef citations updated for " + this.CrossRefcounter + (this.CrossRefcounter === 1 ? " item.\n" : " items.\n") : "") +
+              (this.CNKIcounter > 0 ? "CNKI citations updated for " + this.CNKIcounter + (this.CNKIcounter === 1 ? " item.\n" : " items.\n") : "") +
+              (unUpdated > 0 ? "No citation data was found for " + unUpdated + (unUpdated === 1 ? " item." : " items.") : ""),
             progress: 100,
           });
           //}
@@ -205,16 +205,16 @@ export class ZInspire {
       //   if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
       //     progressWindowNoRecid.createLine({
       //       icon: unUpdated > 0 ? iconCross : iconTick,
-      //       text: this.toUpdate + (this.toUpdate > 1 ? " items" : " item") + " processed.\n" +
-      //         (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter > 1 ? " items.\n" : " item.\n") : "") +
-      //         (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated > 1 ? " items, which have" : " item, which has") + " been tagged with '" + getPref("tag_norecid") + "'." : "")
+      //       text: this.toUpdate + (this.toUpdate === 1 ? " items" : " item") + " processed.\n" +
+      //         (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
+      //         (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated === 1 ? " item, which has" : " items, which have") + " been tagged with '" + getPref("tag_norecid") + "'." : "")
       //     });
       //   } else {
       //     progressWindowNoRecid.createLine({
       //       icon: unUpdated > 0 ? iconCross : iconTick,
-      //       text: this.toUpdate + (this.toUpdate > 1 ? " items" : " item") + " processed.\n" +
-      //         (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter > 1 ? " items.\n" : " item.\n") : "") +
-      //         (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated > 1 ? " items." : " item.") : "")
+      //       text: this.toUpdate + (this.toUpdate === 1 ? " items" : " item") + " processed.\n" +
+      //         (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
+      //         (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated === 1 ? " item, which has" : " items, which have") + " been tagged with '" + getPref("tag_norecid") + "'." : "")
       //     });
       //   }
       //   progressWindowNoRecid.show();
@@ -229,11 +229,11 @@ export class ZInspire {
       //     let unUpdated = this.toUpdate - this.counter - this.CrossRefcounter - this.CNKIcounter;
       //     this.progressWindow.createLine({
       //       icon: unUpdated > 0 ? iconCross : iconTick,
-      //       text: this.toUpdate + (this.toUpdate > 1 ? " items" : " item") + " processed.\n" +
-      //         (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter > 1 ? " items.\n" : " item.\n") : "") +
-      //         (this.CrossRefcounter > 0 ? "CrossRef citations updated for " + this.CrossRefcounter + (this.CrossRefcounter > 1 ? " items.\n" : " item.\n") : "") +
-      //         (this.CNKIcounter > 0 ? "CNKI citations updated for " + this.CNKIcounter + (this.CNKIcounter > 1 ? " items.\n" : " item.\n") : "") +
-      //         (unUpdated > 0 ? "No citation data was found for " + unUpdated + (unUpdated > 1 ? " items." : " item.") : ""),
+      //       text: this.toUpdate + (this.toUpdate === 1 ? " items" : " item") + " processed.\n" +
+      //         (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
+      //         (this.CrossRefcounter > 0 ? "CrossRef citations updated for " + this.CrossRefcounter + (this.CrossRefcounter === 1 ? " item.\n" : " items.\n") : "") +
+      //         (this.CNKIcounter > 0 ? "CNKI citations updated for " + this.CNKIcounter + (this.CNKIcounter === 1 ? " item.\n" : " items.\n") : "") +
+      //         (unUpdated > 0 ? "No citation data was found for " + unUpdated + (unUpdated === 1 ? " item." : " items.") : ""),
       //       progress: 100
       //     });
       //     this.progressWindow.show();
@@ -541,7 +541,7 @@ export class ZInspire {
       this.isCancelled = false;
       this.setupEscapeListener();
       Zotero.debug(
-        `[${config.addonName}] downloadReferencesCacheForCollection: calling prefetch for ${items.length} ${items.length > 1 ? "items" : "item"}`,
+        `[${config.addonName}] downloadReferencesCacheForCollection: calling prefetch for ${items.length} ${items.length === 1 ? "item" : "items"}`,
       );
       await this.prefetchReferencesCache(items);
     } catch (err) {
@@ -588,7 +588,7 @@ export class ZInspire {
     // Use icon in createLine instead to show plugin logo
     this.progressWindow.createLine({
       icon: PLUGIN_ICON,
-      text: `Processing 0 of ${total} ${total > 1 ? "items" : "item"}...`,
+      text: `Processing 0 of ${total} ${total === 1 ? "item" : "items"}...`,
       progress: 0,
     });
     this.progressWindow.show();
@@ -626,7 +626,7 @@ export class ZInspire {
           const percent = Math.round((completed / total) * 100);
           this.progressWindow.changeLine({
             icon: PLUGIN_ICON,
-            text: `Processing ${completed} of ${total} ${total > 1 ? "items" : "item"}...`,
+            text: `Processing ${completed} of ${total} ${total === 1 ? "item" : "items"}...`,
             progress: percent,
           });
         }
@@ -700,7 +700,7 @@ export class ZInspire {
 
   private async prefetchReferencesCache(items: Zotero.Item[]): Promise<void> {
     Zotero.debug(
-      `[${config.addonName}] prefetchReferencesCache: starting with ${items.length} ${items.length > 1 ? "items" : "item"}`,
+      `[${config.addonName}] prefetchReferencesCache: starting with ${items.length} ${items.length === 1 ? "item" : "items"}`,
     );
     const recidSet = new Set<string>();
     for (const item of items) {
@@ -2831,9 +2831,9 @@ function setExtraCitations(extra: any, source: string, citation_count: any) {
   extra = extra.replace(/^\n+/, "");
 
   if (citation_count === existingCitation) {
-    extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (${source} ${existingDate})\n` + extra;
+    extra = `${citation_count} ${citation_count === 1 ? "citation" : "citations"} (${source} ${existingDate})\n` + extra;
   } else {
-    extra = `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (${source} ${today})\n` + extra;
+    extra = `${citation_count} ${citation_count === 1 ? "citation" : "citations"} (${source} ${today})\n` + extra;
   }
 
   return extra;
@@ -2881,7 +2881,7 @@ function reorderExtraFields(extra: string): string {
 
   const lines = extra.split("\n");
   for (const line of lines) {
-    if (line.match(/^\d+\scitations/)) {
+    if (line.match(/^\d+\scitations?/)) {
       citationLines.push(line);
     } else if (line.match(/^(arXiv:|_eprint:)/i)) {
       arxivLines.push(line);
@@ -2902,7 +2902,7 @@ function setCitations(
   const today = new Date(Date.now()).toLocaleDateString("zh-CN");
 
   const topLinesMatch = extra.match(
-    /^(\d+)\scitations?\s\(INSPIRE\s[\d/-]+\)\n(\d+)\scitations\sw\/o\sself\s\(INSPIRE\s[\d/-]+\)\n/,
+    /^(\d+)\scitations?\s\(INSPIRE\s[\d/-]+\)\n(\d+)\scitations?\sw\/o\sself\s\(INSPIRE\s[\d/-]+\)\n/,
   );
 
   if (topLinesMatch) {
@@ -2935,13 +2935,13 @@ function setCitations(
     citation_count_wo_self_citations === existingCitations[1]
   ) {
     extra =
-      `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (INSPIRE ${existingDate})\n` +
-      `${citation_count_wo_self_citations} ${citation_count_wo_self_citations > 1 ? "citations" : "citation"} w/o self (INSPIRE ${existingDate})\n` +
+      `${citation_count} ${citation_count === 1 ? "citation" : "citations"} (INSPIRE ${existingDate})\n` +
+      `${citation_count_wo_self_citations} ${citation_count_wo_self_citations === 1 ? "citation" : "citations"} w/o self (INSPIRE ${existingDate})\n` +
       extra;
   } else {
     extra =
-      `${citation_count} ${citation_count > 1 ? "citations" : "citation"} (INSPIRE ${today})\n` +
-      `${citation_count_wo_self_citations} ${citation_count_wo_self_citations > 1 ? "citations" : "citation"} w/o self (INSPIRE ${today})\n` +
+      `${citation_count} ${citation_count === 1 ? "citation" : "citations"} (INSPIRE ${today})\n` +
+      `${citation_count_wo_self_citations} ${citation_count_wo_self_citations === 1 ? "citation" : "citations"} w/o self (INSPIRE ${today})\n` +
       extra;
   }
 
