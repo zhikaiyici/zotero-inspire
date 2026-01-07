@@ -274,10 +274,10 @@ references-panel-author-stats-no-self =
     [one] 1 citation (no self)
    *[other] { $citations } citations (no self)
   } · h-index: { $h }
-references-panel-author-stats-partial = Based on 
+references-panel-author-stats-partial = 
   { $count ->
-    [one] 1 loaded paper
-   *[other] { $papers } loaded papers 
+    [one] Based on 1 loaded paper
+   *[other] Based on { $count } loaded papers 
   }
 references-panel-author-advisors = Advisors
 references-panel-author-emails = Emails

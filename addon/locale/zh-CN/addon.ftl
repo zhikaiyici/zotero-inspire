@@ -256,9 +256,29 @@ references-panel-author-click-hint = 点击查看 { $author } 的论文
 references-panel-author-profile-loading = 正在加载作者信息...
 references-panel-author-profile-unavailable = 暂无作者信息
 references-panel-author-stats-loading = 正在加载统计数据...
-references-panel-author-stats = { $papers } 篇论文 · { $citations } 次引用 · h-index：{ $h }
-references-panel-author-stats-no-self = { $papers } 篇论文 · { $citations } 次引用（不含自引） · h-index：{ $h }
-references-panel-author-stats-partial = 基于已加载 { $count } 篇论文
+references-panel-author-stats =
+  { $papers ->
+    [one] 1 篇论文
+   *[other] { $papers } 篇论文
+  } · 
+  { $citations ->
+    [one] 1 次引用
+   *[other] { $citations } 次引用
+  } · h-index: { $h }
+references-panel-author-stats-no-self =
+  { $papers ->
+    [one] 1 篇论文
+   *[other] { $papers } 篇论文
+  } · 
+  { $citations ->
+    [one] 1 次引用（不含自引）
+   *[other] { $citations } 次引用（不含自引）
+  } · h-index: { $h }
+references-panel-author-stats-partial =
+  { $count ->
+    [one] 基于已加载 1 篇论文
+   *[other] 基于已加载 { $count } 篇论文
+  }
 references-panel-author-advisors = 导师
 references-panel-author-emails = 邮箱
 references-panel-author-orcid-tooltip = 打开 ORCID 页面
@@ -281,6 +301,10 @@ references-panel-bibtex-copied = BibTeX 已复制到剪贴板
 references-panel-bibtex-failed = 获取 BibTeX 失败
 references-panel-texkey-copied = TeX Key 已复制到剪贴板
 references-panel-texkey-failed = 获取 TeX Key 失败
+references-panel-copy-link = 复制链接
+references-panel-open-link = 在浏览器中打开
+references-panel-link-copied = 链接已复制到剪贴板
+references-panel-copy-failed = 复制到剪贴板失败
 
 # 摘要复制右键菜单
 references-panel-abstract-copy = 复制
