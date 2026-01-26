@@ -141,12 +141,12 @@ export class ZInspire {
           if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
             progressWindowNoRecid.createLine({
               icon: iconCross,
-              text: `${this.toUpdate} ${this.toUpdate === 1 ? " items" : " item"} processed.\nNo INSPIRE recid was found for ${this.noRecidCount} ${itemWord}. Tagged with '${getPref("tag_norecid")}'.`,
+              text: `${this.toUpdate} ${this.toUpdate === 1 ? " item" : " items"} processed.\nNo INSPIRE recid was found for ${this.noRecidCount} ${itemWord}. Tagged with '${getPref("tag_norecid")}'.`,
             });
           } else {
             progressWindowNoRecid.createLine({
               icon: iconCross,
-              text: `${this.toUpdate} ${this.toUpdate === 1 ? " items" : " item"} processed.\nNo INSPIRE recid was found for ${this.noRecidCount} ${itemWord}.`,
+              text: `${this.toUpdate} ${this.toUpdate === 1 ? " item" : " items"} processed.\nNo INSPIRE recid was found for ${this.noRecidCount} ${itemWord}.`,
             });
           }
           progressWindowNoRecid.show();
@@ -181,7 +181,7 @@ export class ZInspire {
           // } else if (operation === "citations") {
           this.progressWindow.createLine({
             icon: unUpdated > 0 ? iconCross : PLUGIN_ICON,
-            text: this.toUpdate + (this.toUpdate === 1 ? " items" : " item") + " processed.\n" +
+            text: this.toUpdate + (this.toUpdate === 1 ? " item" : " items") + " processed.\n" +
               (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
               (this.CrossRefcounter > 0 ? "CrossRef citations updated for " + this.CrossRefcounter + (this.CrossRefcounter === 1 ? " item.\n" : " items.\n") : "") +
               (this.CNKIcounter > 0 ? "CNKI citations updated for " + this.CNKIcounter + (this.CNKIcounter === 1 ? " item.\n" : " items.\n") : "") +
@@ -205,14 +205,14 @@ export class ZInspire {
       //   if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
       //     progressWindowNoRecid.createLine({
       //       icon: unUpdated > 0 ? iconCross : iconTick,
-      //       text: this.toUpdate + (this.toUpdate === 1 ? " items" : " item") + " processed.\n" +
+      //       text: this.toUpdate + (this.toUpdate === 1 ? " item" : " items") + " processed.\n" +
       //         (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
       //         (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated === 1 ? " item, which has" : " items, which have") + " been tagged with '" + getPref("tag_norecid") + "'." : "")
       //     });
       //   } else {
       //     progressWindowNoRecid.createLine({
       //       icon: unUpdated > 0 ? iconCross : iconTick,
-      //       text: this.toUpdate + (this.toUpdate === 1 ? " items" : " item") + " processed.\n" +
+      //       text: this.toUpdate + (this.toUpdate === 1 ? " item" : " items") + " processed.\n" +
       //         (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
       //         (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated === 1 ? " item, which has" : " items, which have") + " been tagged with '" + getPref("tag_norecid") + "'." : "")
       //     });
@@ -229,7 +229,7 @@ export class ZInspire {
       //     let unUpdated = this.toUpdate - this.counter - this.CrossRefcounter - this.CNKIcounter;
       //     this.progressWindow.createLine({
       //       icon: unUpdated > 0 ? iconCross : iconTick,
-      //       text: this.toUpdate + (this.toUpdate === 1 ? " items" : " item") + " processed.\n" +
+      //       text: this.toUpdate + (this.toUpdate === 1 ? " item" : " items") + " processed.\n" +
       //         (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
       //         (this.CrossRefcounter > 0 ? "CrossRef citations updated for " + this.CrossRefcounter + (this.CrossRefcounter === 1 ? " item.\n" : " items.\n") : "") +
       //         (this.CNKIcounter > 0 ? "CNKI citations updated for " + this.CNKIcounter + (this.CNKIcounter === 1 ? " item.\n" : " items.\n") : "") +

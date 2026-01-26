@@ -2,6 +2,7 @@ import { ColumnOptions, DialogHelper } from "zotero-plugin-toolkit";
 import { config } from "../package.json";
 import hooks from "./hooks";
 import { createZToolkit } from "./utils/ztoolkit";
+import { MyCookieSandbox } from "./utils/cookiebox";
 
 class Addon {
   public data: {
@@ -17,6 +18,7 @@ class Addon {
       window: Window;
     };
     dialog?: DialogHelper;
+    myCookieSandbox: MyCookieSandbox;
   };
   // Lifecycle hooks
   public hooks: typeof hooks;
@@ -39,6 +41,7 @@ class Addon {
       config,
       env: __env__,
       ztoolkit: ztoolkit!,
+      myCookieSandbox: new MyCookieSandbox(),
     };
     this.hooks = hooks;
     this.api = {};
