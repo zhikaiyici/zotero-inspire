@@ -18,7 +18,11 @@ const PLUGIN_ICON = `chrome://${config.addonRef}/content/icons/inspire-icon.png`
 const ARXIV_EXTRA_LINE_REGEX = /^.*(arXiv:|_eprint:).*$(\n|)/gim;
 
 const iconCross = "chrome://zotero/skin/cross.png";
-import type { jsobject, ItemWithPendingInspireNote, FavoritePaper } from "./types";
+import type {
+  jsobject,
+  ItemWithPendingInspireNote,
+  FavoritePaper,
+} from "./types";
 import {
   getInspireMeta,
   getCrossrefCount,
@@ -317,7 +321,8 @@ export class ZInspire {
         (first?.lastName as string | undefined) ??
         (first?.name as string | undefined) ??
         "";
-      const lastName = typeof lastNameRaw === "string" ? lastNameRaw.trim() : "";
+      const lastName =
+        typeof lastNameRaw === "string" ? lastNameRaw.trim() : "";
       const authorPart = lastName
         ? creators.length > 1
           ? `${lastName} et al.`
@@ -345,7 +350,11 @@ export class ZInspire {
       const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
       const regularItems = items.filter((item) => item?.isRegularItem());
 
-      const seeds: Array<{ recid: string; title?: string; authorLabel?: string }> = [];
+      const seeds: Array<{
+        recid: string;
+        title?: string;
+        authorLabel?: string;
+      }> = [];
       const seen = new Set<string>();
       const MAX_SEEDS = 10;
 
@@ -371,7 +380,10 @@ export class ZInspire {
         return;
       }
 
-      if (regularItems.length > seeds.length && regularItems.length > MAX_SEEDS) {
+      if (
+        regularItems.length > seeds.length &&
+        regularItems.length > MAX_SEEDS
+      ) {
         this.showCacheNotification(
           getString("citation-graph-merge-truncated", {
             args: { count: MAX_SEEDS },
@@ -413,7 +425,11 @@ export class ZInspire {
       const items = collection?.getChildItems?.() ?? [];
       const regularItems = items.filter((item) => item?.isRegularItem());
 
-      const seeds: Array<{ recid: string; title?: string; authorLabel?: string }> = [];
+      const seeds: Array<{
+        recid: string;
+        title?: string;
+        authorLabel?: string;
+      }> = [];
       const seen = new Set<string>();
       const MAX_SEEDS = 10;
 
@@ -1211,9 +1227,20 @@ export class ZInspire {
       return;
     }
 
-    const citationKey = (
-      item.getField("citationKey") as string | undefined
-    )?.trim();
+    // const citationKey = (
+    //   item.getField("citationKey") as string | undefined
+    // )?.trim();
+    let citationKey = (item.getField("citationKey") as string | undefined)?.trim();
+    if (!citationKey) {
+      const extra = item.getField("extra") as string | undefined;
+      if (extra) {
+        const match = extra.match(/^Citation\s+Key:\s*(\S+)/m);
+        if (match) citationKey = match[1];
+        else citationKey = undefined;
+      } else {
+        citationKey = undefined;
+      }
+    }
     if (!citationKey) {
       this.showCopyNotification(
         getString("copy-error-no-citation-key"),
@@ -1246,9 +1273,18 @@ export class ZInspire {
     if (!items.length) return;
 
     const citationKeys = items
-      .map((item) =>
-        (item.getField("citationKey") as string | undefined)?.trim(),
-      )
+      .map((item) => {
+        let key = (item.getField("citationKey") as string | undefined)?.trim();
+        if (key) return key;
+
+        const extra = item.getField("extra") as string | undefined;
+        if (extra) {
+          const match = extra.match(/^Citation\s+Key:\s*(\S+)/m);
+          if (match) return match[1];
+        }
+
+        return undefined;
+      })
       .filter((key): key is string => !!key);
 
     if (!citationKeys.length) {
@@ -1264,6 +1300,44 @@ export class ZInspire {
     if (success) {
       this.showCopyNotification(
         getString("copy-success-citation-key", {
+          args: { count: copiedCount },
+        }),
+        "success",
+      );
+    } else {
+      this.showCopyNotification(
+        getString("copy-error-clipboard-failed"),
+        "fail",
+      );
+    }
+  }
+
+  /**
+   * Copy INSPIRE recid for the selected items.
+   */
+  async copyInspireRecid() {
+    const items = this.getSelectedRegularItems();
+    if (!items.length) return;
+
+    const recids: string[] = [];
+    const seen = new Set<string>();
+    for (const item of items) {
+      const recid = deriveRecidFromItem(item);
+      if (!recid || seen.has(recid)) continue;
+      seen.add(recid);
+      recids.push(recid);
+    }
+
+    if (!recids.length) {
+      this.showCopyNotification(getString("copy-error-no-recid"), "fail");
+      return;
+    }
+
+    const copiedCount = recids.length;
+    const success = await copyToClipboard(recids.join(", "));
+    if (success) {
+      this.showCopyNotification(
+        getString("copy-success-inspire-recid", {
           args: { count: copiedCount },
         }),
         "success",
@@ -1348,7 +1422,9 @@ export class ZInspire {
 
     const recid = deriveRecidFromItem(item);
     const isPresentation = item.itemType === "presentation";
-    const prefKey = isPresentation ? "favorite_presentations" : "favorite_papers";
+    const prefKey = isPresentation
+      ? "favorite_presentations"
+      : "favorite_papers";
 
     // Get current favorites
     const json = getPref(prefKey) as string;
@@ -1381,7 +1457,9 @@ export class ZInspire {
       const creators = item.getCreators();
       const creatorType = isPresentation ? "presenter" : "author";
       const creatorTypeID = Zotero.CreatorTypes.getID(creatorType);
-      const firstCreator = creators.find((c) => c.creatorTypeID === creatorTypeID);
+      const firstCreator = creators.find(
+        (c) => c.creatorTypeID === creatorTypeID,
+      );
       const creatorCount = creators.filter(
         (c) => c.creatorTypeID === creatorTypeID,
       ).length;
@@ -2042,10 +2120,7 @@ export class ZInspire {
     Zotero.debug(`[${config.addonName}] addCollabTagsToSelection: starting`);
 
     if (!isCollabTagEnabled()) {
-      this.showCollabTagNotification(
-        getString("collab-tag-disabled"),
-        "fail",
-      );
+      this.showCollabTagNotification(getString("collab-tag-disabled"), "fail");
       return;
     }
 
@@ -2115,10 +2190,7 @@ export class ZInspire {
     );
 
     if (!isCollabTagEnabled()) {
-      this.showCollabTagNotification(
-        getString("collab-tag-disabled"),
-        "fail",
-      );
+      this.showCollabTagNotification(getString("collab-tag-disabled"), "fail");
       return;
     }
 
@@ -2315,10 +2387,6 @@ export async function setInspireMeta(
         item.setCreators(mergedCreators ?? metaInspire.creators);
       }
 
-      if (metaInspire.citekey && !item.getField("citationKey")){
-        item.setField("citationKey", metaInspire.citekey);
-      }
-
       if (metaInspire.arxiv) {
         const arxivId = metaInspire.arxiv.value;
         let arXivInfo = "";
@@ -2382,18 +2450,23 @@ export async function setInspireMeta(
 
       await queueOrUpsertInspireNote(item, metaInspire.note);
 
-      if (citekey_pref === "inspire") {
-        if (extra.includes("Citation Key")) {
-          const initialCiteKey = (extra.match(/^.*Citation\sKey:.*$/gm) ||
-            "")[0].split(": ")[1];
-          if (initialCiteKey !== metaInspire.citekey) {
-            extra = extra.replace(
-              /^.*Citation\sKey.*$/gm,
-              `Citation Key: ${metaInspire.citekey}`,
-            );
-          }
+      if (citekey_pref === "inspire" && metaInspire.citekey) {
+        const zoteroVersion = Zotero.version;
+        if (zoteroVersion >= "7.0.31" && !item.getField("citationKey")) {
+          item.setField("citationKey", metaInspire.citekey);
         } else {
-          extra += "\nCitation Key: " + metaInspire.citekey;
+          if (extra.includes("Citation Key")) {
+            const initialCiteKey = (extra.match(/^.*Citation\sKey:.*$/gm) ||
+              "")[0].split(": ")[1];
+            if (initialCiteKey !== metaInspire.citekey) {
+              extra = extra.replace(
+                /^.*Citation\sKey.*$/gm,
+                `Citation Key: ${metaInspire.citekey}`,
+              );
+            }
+          } else {
+            extra += "\nCitation Key: " + metaInspire.citekey;
+          }
         }
       }
     }
@@ -2637,29 +2710,29 @@ export async function setInspireMetaSelective(
 
       await queueOrUpsertInspireNote(item, metaInspire.note);
 
-      // Citation key
       if (
-        allowedFields.has("citekey") &&
         citekey_pref === "inspire" &&
         metaInspire.citekey
       ) {
-        if (extra.includes("Citation Key")) {
-          const initialCiteKey = (extra.match(/^.*Citation\sKey:.*$/gm) ||
-            "")[0]?.split(": ")[1];
-          if (initialCiteKey !== metaInspire.citekey) {
-            extra = extra.replace(
-              /^.*Citation\sKey.*$/gm,
-              `Citation Key: ${metaInspire.citekey}`,
-            );
-          }
-        } else {
-          extra += "\nCitation Key: " + metaInspire.citekey;
-        }
-      }
-
-      // Citation key field
-      if (allowedFields.has("citationKey") && metaInspire.citekey) {
+        const zoteroVersion = Zotero.version;
+        if (zoteroVersion >= "7.0.31" && allowedFields.has("citationKey")) {
           item.setField("citationKey", metaInspire.citekey);
+        } else {
+          if (allowedFields.has("citekey")) {
+            if (extra.includes("Citation Key")) {
+              const initialCiteKey = (extra.match(/^.*Citation\sKey:.*$/gm) ||
+                "")[0]?.split(": ")[1];
+              if (initialCiteKey !== metaInspire.citekey) {
+                extra = extra.replace(
+                  /^.*Citation\sKey.*$/gm,
+                  `Citation Key: ${metaInspire.citekey}`,
+                );
+              }
+            } else {
+              extra += "\nCitation Key: " + metaInspire.citekey;
+            }
+          }
+        }
       }
     }
 

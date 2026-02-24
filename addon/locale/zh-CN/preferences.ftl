@@ -1,5 +1,5 @@
 pref-meta = 为新条目获取 INSPIRE 元数据
-pref-citekey = 在 Extra 字段设置引用键
+pref-citekey = 使用 INSPIRE 引用键
 pref-extra-order = Extra 字段顺序
 pref-arxiv-tag = arXiv 主分类标签
 pref-refs-panel = 引用面板
@@ -146,7 +146,7 @@ pref-smart-update-protect-field-authors =
 pref-smart-update-protect-field-abstract =
     .label = 摘要
 pref-smart-update-protect-field-journal =
-    .label = 期刊
+    .label = 期刊简称
 pref-smart-update-protected-names-title = 受保护的作者姓名
 pref-smart-update-protected-names-desc = 此列表中的作者姓名在更新时将被保留。带变音符号的姓名（如 ä、ö、ü、ß 等）会自动检测。
 pref-smart-update-protected-names-input =

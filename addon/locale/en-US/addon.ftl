@@ -372,6 +372,8 @@ references-panel-chart-selfcite-filter = Excl. self-cit.
 references-panel-chart-selfcite-filter-tooltip = Use citation counts without self-citations when in "By Citations" mode.
 references-panel-chart-published-only = Published
 references-panel-chart-published-only-tooltip = Filter: only show papers with journal information (excludes arXiv-only papers)
+references-panel-chart-total = Total
+references-panel-chart-filtered = Filtered
 
 # Rate limiter localization strings
 references-panel-rate-limit-tooltip = INSPIRE API rate limit status
@@ -403,8 +405,9 @@ references-panel-cache-source-local-expired = From expired cache ({ $age }h ago)
 
 # Context menu copy actions
 menuitem-copy-bibtex = Copy BibTeX
-menuitem-copy-inspire-link = Copy INSPIRE link
 menuitem-copy-citation-key = Copy citation key
+menuitem-copy-inspire-recid = Copy INSPIRE recid
+menuitem-copy-inspire-link = Copy INSPIRE link
 menuitem-copy-inspire-link-md = Copy INSPIRE link (Markdown)
 menuitem-copy-zotero-link = Copy Zotero link
 copy-success-bibtex =
@@ -418,6 +421,11 @@ copy-success-citation-key =
   { $count ->
     [one] Copied 1 citation key
    *[other] Copied { $count } citation keys
+  }
+copy-success-inspire-recid =
+  { $count ->
+    [one] Copied 1 INSPIRE recid
+   *[other] Copied { $count } INSPIRE recids
   }
 copy-success-zotero-link = Zotero link copied to clipboard
 copy-error-no-selection = Select exactly one item to copy
@@ -478,7 +486,7 @@ smart-update-untitled = (Untitled)
 smart-update-value-empty = (empty)
 smart-update-field-title = Title
 smart-update-field-date = Date
-smart-update-field-journal = Journal
+smart-update-field-journal = Journal Abbr
 smart-update-field-volume = Volume
 smart-update-field-pages = Pages
 smart-update-field-issue = Issue

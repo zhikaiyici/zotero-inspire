@@ -1,5 +1,5 @@
 pref-meta = Fetch INSPIRE Metadata for New Items
-pref-citekey = Set Citekey in Extra Field
+pref-citekey = Use INSPIRE Citekey
 pref-extra-order = Field Order in Extra
 pref-arxiv-tag = arXiv Primary Category Tag
 pref-refs-panel = References Panel
@@ -146,7 +146,7 @@ pref-smart-update-protect-field-authors =
 pref-smart-update-protect-field-abstract =
     .label = Abstract
 pref-smart-update-protect-field-journal =
-    .label = Journal
+    .label = Journal Abbr
 pref-smart-update-protected-names-title = Protected author names
 pref-smart-update-protected-names-desc = Author names in this list will be preserved even when updating. Diacritics (ä, ö, ü, ß, etc.) are auto-detected.
 pref-smart-update-protected-names-input =

@@ -858,28 +858,48 @@ export function compareItemWithInspire(
   }
 
   // Citation key comparison
-  if (metaInspire.citekey) {
-    const localCitekey = extra.match(/Citation Key:\s*(\S+)/)?.[1] || null;
-    if (!valuesAreEqual(localCitekey, metaInspire.citekey)) {
-      changes.push({
-        field: "citekey",
-        category: "extra",
-        localValue: localCitekey,
-        inspireValue: metaInspire.citekey,
-        isSignificant: isEmptyValue(localCitekey),
-      });
-    }
+  const citekey_pref = getPref("citekey");
+  if (citekey_pref === "inspire" && metaInspire.citekey) {
+    // On Zotero 8+, citation key lives in the native citationKey field.
+    // On Zotero 7 it is stored as "Citation Key: <key>" in the Extra field.
+    // Always check both so the comparison is version-agnostic.
 
+    const zoteroVersion = Zotero.version;
     // Citation key field comparison
-    const localCitationKey = item.getField("citationKey") as string;
-    if (!valuesAreEqual(localCitationKey, metaInspire.citekey)) {
-      changes.push({
-        field: "citationKey",
-        category: "identifiers",
-        localValue: localCitationKey,
-        inspireValue: metaInspire.citekey,
-        isSignificant: isEmptyValue(localCitationKey),
-      });
+    if (zoteroVersion >= "7.0.31") {
+      // If we're on Zotero 8+, we expect the citekey to be in the citationKey field.
+      // If it's not there, it means the user hasn't set a custom citekey, so we can treat it as null.
+      let localCitationKey = (item.getField("citationKey") as string | undefined)?.trim() || null;
+      if (!localCitationKey) {
+        localCitationKey = null;
+      }
+      if (!valuesAreEqual(localCitationKey, metaInspire.citekey)) {
+        changes.push({
+          field: "citationKey",
+          category: "identifiers",
+          localValue: localCitationKey,
+          inspireValue: metaInspire.citekey,
+          isSignificant: isEmptyValue(localCitationKey),
+        });
+      }
+    } else {
+      // If we're on Zotero 7, we need to extract the citekey from the Extra field.
+      let localCitekey =
+        (item.getField("citationKey") as string | undefined)?.trim() || null;
+      if (!localCitekey) {
+        const extraForKey = (item.getField("extra") as string | undefined) ?? "";
+        const keyMatch = extraForKey.match(/^Citation\s+Key:\s*(\S+)/m);
+        if (keyMatch) localCitekey = keyMatch[1];
+      }
+      if (!valuesAreEqual(localCitekey, metaInspire.citekey)) {
+        changes.push({
+          field: "citekey",
+          category: "extra",
+          localValue: localCitekey,
+          inspireValue: metaInspire.citekey,
+          isSignificant: isEmptyValue(localCitekey),
+        });
+      }
     }
   }
 
@@ -1412,7 +1432,7 @@ export function showUpdateNotification(
   notification.style.alignItems = "center";
   notification.style.justifyContent = "space-between";
   // FIX-ALIGNMENT: Use 8px horizontal padding to align with chart vertical line (matching 8px border-radius)
-  notification.style.padding = "8px 8px"; 
+  notification.style.padding = "8px 8px";
   notification.style.marginBottom = "8px";
   notification.style.backgroundColor = "#e0f2fe";
   // FIX-STYLE: Full-width style as requested by user
@@ -1425,11 +1445,11 @@ export function showUpdateNotification(
   notification.style.color = "#0369a1";
   notification.style.gap = "8px";
   // FIX-PANEL-WIDTH-OVERFLOW: Full width constraints
-  notification.style.width = "100%"; 
+  notification.style.width = "100%";
   notification.style.maxWidth = "100%";
   notification.style.minWidth = "0";
-  notification.style.flexShrink = "0"; 
-  notification.style.flexWrap = "wrap"; 
+  notification.style.flexShrink = "0";
+  notification.style.flexWrap = "wrap";
   notification.style.boxSizing = "border-box";
   notification.style.overflow = "hidden";
 
