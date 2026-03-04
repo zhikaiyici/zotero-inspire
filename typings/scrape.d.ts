@@ -13,6 +13,7 @@
 // }
 
 type SearchOption = {
+  citation?: string;
   source?: string;
   author?: string;
   title: string;

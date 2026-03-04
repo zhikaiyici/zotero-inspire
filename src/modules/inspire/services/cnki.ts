@@ -11,8 +11,19 @@ import { DocTools, jsonToFormUrlEncoded, text2HTMLDoc } from "../../../utils/htt
  */
 function createSearchPostOptions(searchOption: SearchOption) {
     let url;
-    let headers;
-    // SU may find more results than TI. SU %= | TI %=
+    const headers = {
+        Host: "kns.cnki.net",
+        "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0",
+        Accept: "*/*",
+        "Accept-Language": "zh-CN,en-US;q=0.9,en;q=0.8",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        Origin: "https://kns.cnki.net",
+        Referer: `https://kns.cnki.net/kns8s/defaultresult/index?crossids=YSTT4HG0%2CLSTPFY1C%2CJUP3MUPD%2CMPMFIG1A%2CWQ0UVIAA%2CBLZOG7CK%2CPWFIRAGL%2CEMRPGLPA%2CNLBO1Z6R%2CNN3FJMUV&korder=SU&kw=`,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+    }; // SU may find more results than TI. SU %= | TI %=
     let searchExp: string;
     searchOption.title = searchOption.title.replace(/<\/?(sub|sup|b|i|span[^>]*)>/g, "");
     if (searchOption.title.includes(" ")) {
@@ -33,24 +44,15 @@ function createSearchPostOptions(searchOption: SearchOption) {
         searchExp = searchExp + ` AND AU='${searchOption.author}'`;
     if (searchOption.source)
         searchExp = searchExp + ` AND LY='${searchOption.source}'`;
+    if (searchOption.citation)
+        searchExp = searchExp + ` AND CF>${searchOption.citation}`;
     ztoolkit.log("Search expression: ", searchExp);
     const searchExpAside = searchExp.replace(/'/g, "&#39;");
     let queryJson;
     if (true/*getPref("isMainlandChina")*/) {
         ztoolkit.log("CNKI in mainland China.");
         url = "https://kns.cnki.net/kns8s/brief/grid";
-        headers = {
-            Host: "kns.cnki.net",
-            "User-Agent":
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0",
-            Accept: "*/*",
-            "Accept-Language": "zh-CN,en-US;q=0.9,en;q=0.8",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            Origin: "https://kns.cnki.net",
-            Referer: `https://kns.cnki.net/kns8s/defaultresult/index?crossids=YSTT4HG0%2CLSTPFY1C%2CJUP3MUPD%2CMPMFIG1A%2CWQ0UVIAA%2CBLZOG7CK%2CPWFIRAGL%2CEMRPGLPA%2CNLBO1Z6R%2CNN3FJMUV&korder=SU&kw=`,
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-        };
+
         queryJson = {
             boolSearch: "true",
             QueryJson: {
@@ -107,11 +109,12 @@ function createSearchPostOptions(searchOption: SearchOption) {
     } else {
         ztoolkit.log("Using CNKI oversea.");
         url = "https://chn.oversea.cnki.net/kns/Brief/GetGridTableHtml";
-        headers = {
-            Host: "chn.oversea.cnki.net",
-            Referer:
-                "https://chn.oversea.cnki.net/kns/AdvSearch?dbcode=CFLS&crossDbcodes=CJFQ,CDMD,CIPD,CCND,CYFD,CCJD,BDZK,CISD,CJFQ,CDMD,CIPD,CCND,CYFD,CCJD,BDZK,CISD,CJFN",
-        };
+        headers.Host = "www.cnki.net";
+        headers.Referer = "https://www.cnki.net/kns/defaultresult/index";
+        headers.Origin = "https://www.cnki.net";
+        headers.Accept = "text/html, */*; q=0.01";
+        headers["Accept-Language"] = "zh-CN,zh;q=0.9";
+
         queryJson = {
             IsSearch: "true",
             QueryJson: {
@@ -178,14 +181,6 @@ function createSearchPostOptions(searchOption: SearchOption) {
 async function searchWeb(searchOption: SearchOption) {
     ztoolkit.log("serch options: ", searchOption);
     const postOption = createSearchPostOptions(searchOption);
-    // const resp = await Zotero.HTTP.request("POST", postOption.url, {
-    //     headers: postOption.headers,
-    //     body: postOption.data,
-    // });
-    // // TODO
-    // // Need to handle some HTTP request ERROR
-    // // ztoolkit.log(resp.responseText);
-    // const searchDoc = text2HTMLDoc(resp.responseText);
     let responseText: string;
     const resp = await Zotero.HTTP.request("POST", postOption.url, {
       headers: postOption.headers,
@@ -227,6 +222,11 @@ async function searchWeb(searchOption: SearchOption) {
     return resultRows;
 }
 
+/**
+ * Copied and modified from 
+ *     class CNKI implements ScrapeService -> 
+ *         async search(searchOption: SearchOption,): Promise<ScrapeSearchResult[] | null>
+ */
 export async function searchCNKI(searchOption: SearchOption,): Promise<ScrapeSearchResult[] | null> {
     // ztoolkit.log("serch options: ", searchOption);
     // const postOption = createSearchPostOptions(searchOption);
@@ -248,6 +248,16 @@ export async function searchCNKI(searchOption: SearchOption,): Promise<ScrapeSea
         searchOption.author = "";
         resultRows = await searchWeb(searchOption)
     }
+    if (resultRows.length == 0) {
+        ztoolkit.log("CNKI no items found after the second search.");
+        searchOption.citation = "";
+        resultRows = await searchWeb(searchOption)
+    }
+    // if (resultRows.length == 0) {
+    //     ztoolkit.log("CNKI no items found after the third search.");
+    //     searchOption.source = "";
+    //     resultRows = await searchWeb(searchOption)
+    // }
     if (resultRows.length == 0) {
         ztoolkit.log("CNKI no items found.");
         return null;

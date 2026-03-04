@@ -478,6 +478,7 @@ export async function getCNKICount(item: Zotero.Item) {
     title: item.getField("title"),
     author: item.getCreators()[0].lastName + item.getCreators()[0].firstName,
     source: item.getField("publicationTitle"),
+    citation: "0",
   };
   const searchResults = await searchCNKI(searchOption);
   if (searchResults && searchResults.length > 0) {
@@ -485,7 +486,7 @@ export async function getCNKICount(item: Zotero.Item) {
       ztoolkit.log(`searchRes.title: ${searchRes.originTitle}`);
       ztoolkit.log(`searchOption.title: ${searchOption.title}`);
       if (searchRes.originTitle === searchOption.title || searchResults.length === 1) {
-        cite = (searchRes.citation as string) ? (searchRes.citation as string) : "-1";
+        cite = (searchRes.citation as string) ? (searchRes.citation as string) : "0";
         ztoolkit.log(`CNKI citation: ${cite}`);
         break;
       }
