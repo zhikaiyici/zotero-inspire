@@ -164,7 +164,7 @@ export class ZInspire {
           progressWindowFinished.changeHeadline("INSPIRE metadata retrieved");
           progressWindowFinished.createLine({
             icon: PLUGIN_ICON,
-            text: `INSPIRE metadata updated for ${this.toUpdate} ${this.toUpdate === 1 ? " items" : " item"}.`,
+            text: `INSPIRE metadata updated for ${this.toUpdate} ${this.toUpdate === 1 ? " item" : " items"}.`,
           });
           progressWindowFinished.show();
           progressWindowFinished.startCloseTimer(3000);
