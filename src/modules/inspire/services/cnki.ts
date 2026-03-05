@@ -43,7 +43,7 @@ function createSearchPostOptions(searchOption: SearchOption) {
     if (searchOption.author)
         searchExp = searchExp + ` AND AU='${searchOption.author}'`;
     if (searchOption.source)
-        searchExp = searchExp + ` AND LY='${searchOption.source}'`;
+        searchExp = searchExp + ` AND LY='${searchOption.source.slice(0, 60)}'`;
     if (searchOption.citation)
         searchExp = searchExp + ` AND CF>${searchOption.citation}`;
     ztoolkit.log("Search expression: ", searchExp);

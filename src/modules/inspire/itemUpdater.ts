@@ -1007,7 +1007,7 @@ export class ZInspire {
             if (/[\u4e00-\u9fa5]/.test(item.getField("title"))) {
               const cnki_count = await setCNKICitations(item);
               item.saveTx();
-              if (cnki_count > 0) {
+              if (cnki_count >= 0) {
                 this.CNKIcounter++
               }
             }
@@ -1064,7 +1064,7 @@ export class ZInspire {
             if (/[\u4e00-\u9fa5]/.test(item.getField("title"))) {
               const cnki_count = await setCNKICitations(item);
               item.saveTx();
-              if (cnki_count > 0) {
+              if (cnki_count >= 0) {
                 this.CNKIcounter++
               }
             }

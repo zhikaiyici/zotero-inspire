@@ -477,7 +477,7 @@ export async function getCNKICount(item: Zotero.Item) {
   const searchOption = {
     title: item.getField("title"),
     author: item.getCreators()[0].lastName + item.getCreators()[0].firstName,
-    source: item.getField("publicationTitle"),
+    source: item.getField("publicationTitle") + item.getField("proceedingsTitle"),
     citation: "0",
   };
   const searchResults = await searchCNKI(searchOption);
