@@ -273,7 +273,7 @@ export async function searchCNKI(searchOption: SearchOption,): Promise<ScrapeSea
             return {
                 source: "CNKI",
                 title: title,
-                originTitle: dt.innerText("td.name a"),
+                articleTitle: dt.innerText("td.name a"),
                 url: url,
                 date: Zotero.Date.strToISO(dt.innerText("td.date")) || "",
                 netFirst: dt.innerText("td.name > b.marktip"),
