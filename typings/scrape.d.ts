@@ -14,6 +14,7 @@
 
 type SearchOption = {
   citation?: string;
+  year?: string;
   source?: string;
   author?: string;
   title: string;

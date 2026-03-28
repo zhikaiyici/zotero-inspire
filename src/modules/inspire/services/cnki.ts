@@ -40,6 +40,8 @@ function createSearchPostOptions(searchOption: SearchOption) {
     } else {
         searchExp = `TI %= '${searchOption.title}'`;
     }
+    if (searchOption.year)
+        searchExp = searchExp + ` AND YE='${searchOption.year}'`;
     if (searchOption.author)
         searchExp = searchExp + ` AND AU='${searchOption.author}'`;
     if (searchOption.source)
@@ -103,7 +105,7 @@ function createSearchPostOptions(searchOption: SearchOption) {
             productStr:
                 "YSTT4HG0,LSTPFY1C,RMJLXHZ3,JQIRZIYA,JUP3MUPD,1UR4K4HZ,BPBAFJ5S,R79MZMCB,MPMFIG1A,WQ0UVIAA,NB3BWEHK,XVLO76FD,HR1YT1Z9,BLZOG7CK,PWFIRAGL,EMRPGLPA,J708GVCE,ML4DRIDX,NLBO1Z6R,NN3FJMUV,",
             aside: `(${searchExpAside})`,
-            searchFrom: "资源范围：总库;++中英文扩展;++时间范围：更新时间：不限;++",
+            searchFrom: `资源范围：总库;++中英文扩展;++时间范围：发表时间：${searchOption.year}-01-01到${searchOption.year}-12-31;++更新时间：不限;++`,
             CurPage: "1",
         };
     } else {
@@ -183,35 +185,35 @@ async function searchWeb(searchOption: SearchOption) {
     const postOption = createSearchPostOptions(searchOption);
     let responseText: string;
     const resp = await Zotero.HTTP.request("POST", postOption.url, {
-      headers: postOption.headers,
-      body: postOption.data,
-      cookieSandbox: await addon.data.myCookieSandbox.getCNKIHomeCookieBox(),
-      timeout: 10000,
-      successCodes: [200, 403],
-    });
-    ztoolkit.log("CNKI search response: ", resp);
-    responseText = resp.responseText;
-    if (resp.status === 403) {
-      ztoolkit.log(
-        "CNKI search access forbidden (403). This is likely due to missing or invalid cookies.",
-      );
-      const respJson = JSON.parse(resp.responseText);
-      ztoolkit.log("Retrying CNKI search after updating cookies...");
-      await addon.data.myCookieSandbox.passCaptchaToCookieBox(
-        respJson.message,
-        "CNKI:Home",
-      );
-      postOption.headers["Referer"] = respJson.message;
-      ztoolkit.log("Refer", postOption.headers);
-      const resp2 = await Zotero.HTTP.request("POST", postOption.url, {
         headers: postOption.headers,
         body: postOption.data,
         cookieSandbox: await addon.data.myCookieSandbox.getCNKIHomeCookieBox(),
         timeout: 10000,
         successCodes: [200, 403],
-      });
-      ztoolkit.log("CNKI retry search response: ", resp2);
-      responseText = resp2.responseText;
+    });
+    ztoolkit.log("CNKI search response: ", resp);
+    responseText = resp.responseText;
+    if (resp.status === 403) {
+        ztoolkit.log(
+            "CNKI search access forbidden (403). This is likely due to missing or invalid cookies.",
+        );
+        const respJson = JSON.parse(resp.responseText);
+        ztoolkit.log("Retrying CNKI search after updating cookies...");
+        await addon.data.myCookieSandbox.passCaptchaToCookieBox(
+            respJson.message,
+            "CNKI:Home",
+        );
+        postOption.headers["Referer"] = respJson.message;
+        ztoolkit.log("Refer", postOption.headers);
+        const resp2 = await Zotero.HTTP.request("POST", postOption.url, {
+            headers: postOption.headers,
+            body: postOption.data,
+            cookieSandbox: await addon.data.myCookieSandbox.getCNKIHomeCookieBox(),
+            timeout: 10000,
+            successCodes: [200, 403],
+        });
+        ztoolkit.log("CNKI retry search response: ", resp2);
+        responseText = resp2.responseText;
     }
     ztoolkit.log("CNKI final search response: ", responseText);
     const searchDoc = text2HTMLDoc(responseText);
