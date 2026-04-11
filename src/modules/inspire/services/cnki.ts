@@ -257,6 +257,11 @@ export async function searchCNKI(searchOption: SearchOption,): Promise<ScrapeSea
         searchOption.citation = "";
         resultRows = await searchWeb(searchOption)
     }
+    if (resultRows.length == 0) {
+        ztoolkit.log("CNKI no items found after the third search.");
+        searchOption.year = "";
+        resultRows = await searchWeb(searchOption)
+    }
     // if (resultRows.length == 0) {
     //     ztoolkit.log("CNKI no items found after the third search.");
     //     searchOption.source = "";
