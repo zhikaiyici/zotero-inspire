@@ -186,14 +186,19 @@ async function searchWeb(searchOption: SearchOption) {
     ztoolkit.log("serch options: ", searchOption);
     const postOption = createSearchPostOptions(searchOption);
     let responseText: string;
+    const cookieBoxId = await addon.data.myCookieSandbox.getCNKIHomeCookieId();
+    ztoolkit.log("Cookie id in sandbox: ", cookieBoxId);
+    // ztoolkit.log(addon.taskRunner.runningTask);
+    // addon.taskRunner.runningTask?.addMsg(`CNKI site info: ${cookieBoxId}`);
     const resp = await Zotero.HTTP.request("POST", postOption.url, {
         headers: postOption.headers,
         body: postOption.data,
-        cookieSandbox: await addon.data.myCookieSandbox.getCNKIHomeCookieBox(),
+        // @ts-ignore Not typed
+        userContextId: cookieBoxId,
         timeout: 10000,
         successCodes: [200, 403],
     });
-    ztoolkit.log("CNKI search response: ", resp);
+    // ztoolkit.log("CNKI search response: ", resp);
     responseText = resp.responseText;
     if (resp.status === 403) {
         ztoolkit.log(
@@ -210,7 +215,8 @@ async function searchWeb(searchOption: SearchOption) {
         const resp2 = await Zotero.HTTP.request("POST", postOption.url, {
             headers: postOption.headers,
             body: postOption.data,
-            cookieSandbox: await addon.data.myCookieSandbox.getCNKIHomeCookieBox(),
+            // @ts-ignore Not typed
+            userContextId: await addon.data.myCookieSandbox.getCNKIHomeCookieId(),
             timeout: 10000,
             successCodes: [200, 403],
         });
