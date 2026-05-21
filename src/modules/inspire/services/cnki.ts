@@ -48,8 +48,8 @@ function createSearchPostOptions(searchOption: SearchOption) {
         searchExp = searchExp + ` AND AU='${searchOption.author}'`;
     if (searchOption.source)
         searchExp = searchExp + ` AND LY='${searchOption.source.slice(0, 60)}'`;
-    if (searchOption.citation)
-        searchExp = searchExp + ` AND CF>${searchOption.citation}`;
+    // if (searchOption.citation)
+    //     searchExp = searchExp + ` AND CF>${searchOption.citation}`;
     ztoolkit.log("Search expression: ", searchExp);
     const searchExpAside = searchExp.replace(/'/g, "&#39;");
     let queryJson;
@@ -258,11 +258,11 @@ export async function searchCNKI(searchOption: SearchOption,): Promise<ScrapeSea
         searchOption.author = "";
         resultRows = await searchWeb(searchOption)
     }
-    if (resultRows.length == 0) {
-        ztoolkit.log("CNKI no items found after the second search.");
-        searchOption.citation = "";
-        resultRows = await searchWeb(searchOption)
-    }
+    // if (resultRows.length == 0) {
+    //     ztoolkit.log("CNKI no items found after the second search.");
+    //     searchOption.citation = "";
+    //     resultRows = await searchWeb(searchOption)
+    // }
     if (resultRows.length == 0) {
         ztoolkit.log("CNKI no items found after the third search.");
         searchOption.year = "";
