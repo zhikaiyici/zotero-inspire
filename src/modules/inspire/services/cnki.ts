@@ -25,6 +25,7 @@ function createSearchPostOptions(searchOption: SearchOption) {
         "Sec-Fetch-Mode": "cors",
     }; // SU may find more results than TI. SU %= | TI %=
     let searchExp: string;
+    let searchFromTxt: string;
     searchOption.title = searchOption.title.replace(/<\/?(sub|sup|b|i|span[^>]*)>/g, "");
     if (searchOption.title.includes(" ")) {
         //// 过滤掉短的主题词，可以避免出现大量无关结果
@@ -42,8 +43,12 @@ function createSearchPostOptions(searchOption: SearchOption) {
     } else {
         searchExp = `TI %= '${searchOption.title}'`;
     }
-    if (searchOption.year)
+    if (searchOption.year) {
         searchExp = searchExp + ` AND YE='${searchOption.year}'`;
+        searchFromTxt = `资源范围：总库;++中英文扩展;++时间范围：发表时间：${searchOption.year}-01-01到${searchOption.year}-12-31;++更新时间：不限;++`;
+    } else {
+        searchFromTxt = `资源范围：总库;++中英文扩展;++时间范围：更新时间：不限;++`;
+    }
     if (searchOption.author)
         searchExp = searchExp + ` AND AU='${searchOption.author}'`;
     if (searchOption.source)
@@ -107,7 +112,7 @@ function createSearchPostOptions(searchOption: SearchOption) {
             productStr:
                 "YSTT4HG0,LSTPFY1C,RMJLXHZ3,JQIRZIYA,JUP3MUPD,1UR4K4HZ,BPBAFJ5S,R79MZMCB,MPMFIG1A,WQ0UVIAA,NB3BWEHK,XVLO76FD,HR1YT1Z9,BLZOG7CK,PWFIRAGL,EMRPGLPA,J708GVCE,ML4DRIDX,NLBO1Z6R,NN3FJMUV,",
             aside: `(${searchExpAside})`,
-            searchFrom: `资源范围：总库;++中英文扩展;++时间范围：发表时间：${searchOption.year}-01-01到${searchOption.year}-12-31;++更新时间：不限;++`,
+            searchFrom: `${searchFromTxt}`,
             CurPage: "1",
         };
     } else {
