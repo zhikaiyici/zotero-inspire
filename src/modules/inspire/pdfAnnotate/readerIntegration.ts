@@ -2634,6 +2634,20 @@ export class ReaderIntegration {
         return;
       }
 
+      // S6: Pre-warm the overlay reference mapping for the active tab so the
+      // first citation HOVER doesn't pay a cold getProcessedData()/overlay
+      // build. Idempotent (overlayMappingCache-guarded) and returns null
+      // gracefully if the reader isn't ready yet (the hover builds it on
+      // demand then). Scheduled on idle so it never competes with rendering.
+      this.scheduleIdle(() => {
+        if (!this.initialized) return;
+        // Re-check at execution time: the user may have switched or closed tabs
+        // during the idle wait, so only pre-warm if this is still the active
+        // tab (avoids building overlays for a no-longer-visible reader).
+        if (String(ReaderTabHelper.getSelectedTabID()) !== tabID) return;
+        void this.buildMappingFromOverlays(reader);
+      });
+
       // Skip citation format detection if already detected or currently scanning
       if (
         this.transientState.citationFormatByItem.has(itemID) ||
