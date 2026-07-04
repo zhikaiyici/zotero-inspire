@@ -435,6 +435,25 @@ export class ReaderIntegration {
   }
 
   /**
+   * S7: A "presentation" item (talk / slides) has no reference list, so the
+   * citation-lookup / reference-parse feature does not apply to it. Resolves the
+   * reader's parent item and checks its Zotero item type.
+   */
+  private isPresentationReader(reader: any): boolean {
+    try {
+      const itemID = reader?.itemID;
+      if (!itemID) return false;
+      const item = Zotero.Items.get(itemID);
+      if (!item) return false;
+      const parentItemID = item.parentItemID || itemID;
+      const parentItem = Zotero.Items.get(parentItemID);
+      return parentItem?.itemType === "presentation";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Handle text selection popup event.
    * Adds "Look up in References" button when citation is detected.
    */
@@ -445,6 +464,15 @@ export class ReaderIntegration {
     append: (elem: Element) => void;
   }): void {
     const { reader, doc, params, append } = args;
+
+    // S7: A "presentation" item has no reference list, so neither the citation
+    // buttons nor the reference/PDF preload apply — bail before either.
+    if (this.isPresentationReader(reader)) {
+      debugLog(
+        `[${config.addonName}] [PDF-ANNOTATE] Skipping presentation reader (no reference list)`,
+      );
+      return;
+    }
 
     // Debug: log all args structure to understand what Zotero provides
     debugLog(
@@ -1421,6 +1449,9 @@ export class ReaderIntegration {
       const parentItemID = item.parentItemID || itemID;
       const parentItem = Zotero.Items.get(parentItemID);
       if (!parentItem || !parentItem.isRegularItem()) return;
+
+      // S7: Presentations have no reference list — nothing to preload/parse.
+      if (parentItem?.itemType === "presentation") return;
 
       // Get recid from parent item
       const recid = deriveRecidFromItem(parentItem);
@@ -2671,6 +2702,13 @@ export class ReaderIntegration {
           // Emit event so panel can refresh
           this.emit("itemRecidAvailable", { parentItemID, recid });
         }
+      }
+
+      // S7: Presentations have no reference list — skip the citation-lookup /
+      // reference-parse feature entirely (format detection, overlay pre-warm,
+      // preload). Recid tracking above still runs for the panel.
+      if (parentItem?.itemType === "presentation") {
+        return;
       }
 
       // S2: Only the ACTIVE reader tab warms citation-format detection and

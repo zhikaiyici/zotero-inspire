@@ -2847,6 +2847,14 @@ class InspireReferencePanelController {
       `[${config.addonName}] [PDF-ANNOTATE] handleCitationLookup: parentItemID=${event.parentItemID}, currentItemID=${this.currentItemID}, labels=[${event.citation.labels.join(",")}]`,
     );
 
+    // S7: Presentations have no reference list — no citation lookup applies.
+    // Defensive: button creation is already suppressed for presentations, but
+    // guard here too so any future caller of handleCitationLookup is covered.
+    const lookupParentItem = Zotero.Items.get(event.parentItemID);
+    if (lookupParentItem?.itemType === "presentation") {
+      return;
+    }
+
     // FTR-MULTI-PDF-FIX-V4: Relaxed readerTabID check
     // Previously, we rejected events from tabs that weren't the "selected" one.
     // But with multi-PDF caching by attachmentItemID, each PDF has its own labelMatcher,
