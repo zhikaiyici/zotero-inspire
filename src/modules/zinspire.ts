@@ -14623,6 +14623,8 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
       setTimeout(() => {
         this.restoreScrollPositionIfNeeded();
       }, 0);
+      // ISSUE-110: optionally fetch the PDF right after adding (opt-in pref).
+      void this.maybeAutoFindFullText(newItem);
     }
   }
 
@@ -16661,6 +16663,37 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
         this.rowCache.set(entry.id, rowFromCaches);
       }
       this.updateRowStatus(entry);
+      // ISSUE-110: optionally fetch the PDF right after adding (opt-in pref).
+      void this.maybeAutoFindFullText(newItem);
+    }
+  }
+
+  /**
+   * ISSUE-110: If the "auto find full text on import" pref is enabled, run
+   * Zotero's Find Full Text (Attachments.addAvailableFiles) on a freshly-imported
+   * item so that adding a reference and fetching its PDF are a single step.
+   * Fire-and-forget: Zotero shows its own progress UI, and this never rejects
+   * (all errors are caught and logged).
+   */
+  private async maybeAutoFindFullText(item: Zotero.Item): Promise<void> {
+    try {
+      if (getPref("auto_find_fulltext_on_import") !== true) {
+        return;
+      }
+      // Run in the main-window Zotero context so notifier-driven UI updates fire
+      // (mirrors the manual Find Full Text button in the panel).
+      const mainWin = Zotero.getMainWindow?.() as any;
+      const Z: any = mainWin?.Zotero || Zotero;
+      const target =
+        typeof Z.Items?.get === "function" ? Z.Items.get(item.id) : item;
+      const attachmentsAPI: any = Z.Attachments || Zotero.Attachments;
+      if (target && attachmentsAPI?.addAvailableFiles) {
+        await attachmentsAPI.addAvailableFiles([target]);
+      }
+    } catch (err) {
+      Zotero.debug(
+        `[${config.addonName}] Auto find full text on import failed: ${err}`,
+      );
     }
   }
 

@@ -93,6 +93,9 @@ pref-pdf-force-mapping-desc = 如果 PDF 和 INSPIRE 引用列表不一致（如
 pref-reader-auto-reopen =
     .label = 前进/后退导航时重新打开阅读器标签页
 pref-reader-auto-reopen-desc = 启用后，如果阅读器标签页已关闭，在使用前进或后退导航时将自动重新打开。
+pref-auto-find-fulltext =
+    .label = 添加到文库后自动“查找全文”
+pref-auto-find-fulltext-desc = 从面板将参考文献添加到文库时，自动对新条目执行 Zotero 的“查找全文”以获取 PDF（仅单条添加，不含批量导入）。
 
 pref-nofound-enable =
     .label = 为没有 INSPIRE 记录的条目添加标签
