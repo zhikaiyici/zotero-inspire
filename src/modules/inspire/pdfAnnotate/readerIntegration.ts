@@ -92,6 +92,10 @@ interface TransientState {
   pdfParsingItems: Set<number>;
   /** FTR-PRELOAD-AWAIT: Track PDF parsing promises for await support */
   pdfParsingPromises: Map<number, Promise<void>>;
+  /** S2: FIFO queue of attachment IDs awaiting a background PDF parse (concurrency=1) */
+  pdfParseQueue: number[];
+  /** S2: true while a background PDF parse is running/scheduled (serialization guard) */
+  pdfParseRunning: boolean;
 }
 
 /**
@@ -108,6 +112,8 @@ function createInitialTransientState(): TransientState {
     itemsAwaitingRecid: new Set(),
     pdfParsingItems: new Set(),
     pdfParsingPromises: new Map(),
+    pdfParseQueue: [],
+    pdfParseRunning: false,
   };
 }
 
@@ -1547,25 +1553,92 @@ export class ReaderIntegration {
     const parentItemID = attachment.parentItemID;
     if (!parentItemID) return;
 
-    // Skip if already parsing or cached - use attachmentItemID as key
+    // Skip if already parsing, cached, or already queued.
     // FTR-MULTI-PDF-FIX: Each PDF attachment has its own cache entry
     if (this.transientState.pdfParsingItems.has(attachmentItemID)) return;
     if (this.pdfMappingCache.has(attachmentItemID)) return;
+    if (this.transientState.pdfParseQueue.includes(attachmentItemID)) return;
 
-    // Create and track the parsing promise - use attachmentItemID as key
-    const parsePromise = this.preloadPDFParsing(attachmentItemID);
-    this.transientState.pdfParsingPromises.set(attachmentItemID, parsePromise);
+    // S2: Serialize background PDF parses (concurrency = 1). A session restore
+    // re-opens every previously-open reader tab at once; without this a burst of
+    // tabs would each start a CPU-heavy parse simultaneously. Requests queue and
+    // drain one at a time, each scheduled on idle so the UI stays responsive.
+    this.transientState.pdfParseQueue.push(attachmentItemID);
+    this.pumpPdfParseQueue();
+  }
 
-    // Clean up promise map when done
-    parsePromise
-      .finally(() => {
-        this.transientState.pdfParsingPromises.delete(attachmentItemID);
-      })
-      .catch((err) => {
-        Zotero.debug(
-          `[${config.addonName}] [PRELOAD] PDF parsing preload failed: ${err}`,
-        );
-      });
+  /**
+   * S2: Drain the background PDF-parse queue one item at a time (concurrency=1).
+   * `pdfParseRunning` is set synchronously before scheduling so a second pump
+   * (e.g. from a concurrent trigger) cannot start an overlapping parse during
+   * the idle-callback gap. Each parse re-pumps the queue when it settles.
+   */
+  private pumpPdfParseQueue(): void {
+    if (this.transientState.pdfParseRunning) return;
+
+    // Skip entries that became cached / in-flight while they sat in the queue.
+    // (A concurrent click on the active tab may inline-parse a still-queued
+    // item — safe: same mapping, and preloadPDFParsing re-checks the cache.)
+    let next = this.transientState.pdfParseQueue.shift();
+    while (
+      next !== undefined &&
+      (this.pdfMappingCache.has(next) ||
+        this.transientState.pdfParsingItems.has(next))
+    ) {
+      next = this.transientState.pdfParseQueue.shift();
+    }
+    if (next === undefined) return;
+
+    const attachmentItemID = next;
+    this.transientState.pdfParseRunning = true;
+    // Snapshot the state object; if cleanup() swaps transientState before the
+    // idle callback fires, bail rather than resurrect a parse into a fresh or
+    // torn-down session (flagged by both reviewers).
+    const stateAtSchedule = this.transientState;
+
+    const runParse = () => {
+      if (this.transientState !== stateAtSchedule) return;
+      const parsePromise = this.preloadPDFParsing(attachmentItemID);
+      this.transientState.pdfParsingPromises.set(attachmentItemID, parsePromise);
+      parsePromise
+        .catch((err) => {
+          Zotero.debug(
+            `[${config.addonName}] [PRELOAD] PDF parsing preload failed: ${err}`,
+          );
+        })
+        .finally(() => {
+          this.transientState.pdfParsingPromises.delete(attachmentItemID);
+          this.transientState.pdfParseRunning = false;
+          // Drain the next queued parse, if any.
+          this.pumpPdfParseQueue();
+        });
+    };
+
+    this.scheduleIdle(runParse);
+  }
+
+  /**
+   * S2: Run a callback when the main thread is idle, so CPU-heavy parse work
+   * yields to the UI. Falls back to a short timeout where requestIdleCallback is
+   * unavailable.
+   */
+  private scheduleIdle(fn: () => void): void {
+    try {
+      const win = Zotero.getMainWindow() as any;
+      if (win && typeof win.requestIdleCallback === "function") {
+        win.requestIdleCallback(fn, { timeout: 2000 });
+        return;
+      }
+      if (win && typeof win.setTimeout === "function") {
+        win.setTimeout(fn, 200);
+        return;
+      }
+    } catch (err) {
+      Zotero.debug(
+        `[${config.addonName}] [PRELOAD] scheduleIdle fell back to setTimeout: ${err}`,
+      );
+    }
+    setTimeout(fn, 200);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2551,6 +2624,16 @@ export class ReaderIntegration {
         }
       }
 
+      // S2: Only the ACTIVE reader tab warms citation-format detection and
+      // reference/PDF preload. On session restore Zotero fires an "add" event
+      // for every restored tab; without this gate each background tab would
+      // kick off a CPU-heavy PDF parse (a restore stampede). Background tabs
+      // warm lazily when the user switches to them — a later "select" event
+      // re-enters this handler with the tab now selected.
+      if (String(ReaderTabHelper.getSelectedTabID()) !== tabID) {
+        return;
+      }
+
       // Skip citation format detection if already detected or currently scanning
       if (
         this.transientState.citationFormatByItem.has(itemID) ||
@@ -2595,6 +2678,11 @@ export class ReaderIntegration {
       this.transientState.maxKnownLabelByItem.delete(attachmentItemID);
       this.transientState.pdfParsingItems.delete(attachmentItemID);
       this.transientState.pdfParsingPromises.delete(attachmentItemID);
+      const queueIdx =
+        this.transientState.pdfParseQueue.indexOf(attachmentItemID);
+      if (queueIdx !== -1) {
+        this.transientState.pdfParseQueue.splice(queueIdx, 1);
+      }
 
       // Best-effort: clear caches keyed by attachment item ID
       this.pdfMappingCache.delete(attachmentItemID);
