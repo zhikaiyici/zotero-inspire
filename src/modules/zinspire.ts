@@ -14624,7 +14624,7 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
         this.restoreScrollPositionIfNeeded();
       }, 0);
       // ISSUE-110: optionally fetch the PDF right after adding (opt-in pref).
-      void this.maybeAutoFindFullText(newItem);
+      void this.maybeAutoFindFullText(entry, newItem);
     }
   }
 
@@ -16664,7 +16664,7 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
       }
       this.updateRowStatus(entry);
       // ISSUE-110: optionally fetch the PDF right after adding (opt-in pref).
-      void this.maybeAutoFindFullText(newItem);
+      void this.maybeAutoFindFullText(entry, newItem);
     }
   }
 
@@ -16675,20 +16675,31 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
    * Fire-and-forget: Zotero shows its own progress UI, and this never rejects
    * (all errors are caught and logged).
    */
-  private async maybeAutoFindFullText(item: Zotero.Item): Promise<void> {
+  private async maybeAutoFindFullText(
+    entry: InspireReferenceEntry,
+    item: Zotero.Item,
+  ): Promise<void> {
     try {
       if (getPref("auto_find_fulltext_on_import") !== true) {
         return;
       }
-      // Run in the main-window Zotero context so notifier-driven UI updates fire
-      // (mirrors the manual Find Full Text button in the panel).
+      // Mirror the manual Find Full Text panel button: run in the main-window
+      // Zotero context, then poll for the attachment and refresh the panel row.
       const mainWin = Zotero.getMainWindow?.() as any;
       const Z: any = mainWin?.Zotero || Zotero;
       const target =
-        typeof Z.Items?.get === "function" ? Z.Items.get(item.id) : item;
+        (typeof Z.Items?.get === "function" ? Z.Items.get(item.id) : null) ||
+        item;
       const attachmentsAPI: any = Z.Attachments || Zotero.Attachments;
-      if (target && attachmentsAPI?.addAvailableFiles) {
-        await attachmentsAPI.addAvailableFiles([target]);
+      if (!target || typeof attachmentsAPI?.addAvailableFiles !== "function") {
+        return;
+      }
+      await attachmentsAPI.addAvailableFiles([target]);
+      const pdfID = await this.waitForFirstPdfAttachmentID(item.id);
+      if (pdfID) {
+        await this.notifyItemModifiedForUI(item.id, pdfID);
+        // Refresh the panel row so the find-PDF marker becomes the PDF marker.
+        this.updateRowStatus(entry);
       }
     } catch (err) {
       Zotero.debug(
