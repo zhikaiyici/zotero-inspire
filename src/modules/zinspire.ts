@@ -5761,7 +5761,13 @@ class InspireReferencePanelController {
           clearTimeout(this.markerClickTimer);
         }
         this.markerClickTimer = setTimeout(() => {
-          this.handleMarkerClick(entry, marker).catch(() => void 0);
+          this.handleMarkerClick(entry, marker).catch((err) => {
+            // Previously swallowed silently, which masked failures in the
+            // add/auto-find-full-text path. Log so problems are diagnosable.
+            Zotero.debug(
+              `[${config.addonName}] handleMarkerClick failed\n${(err as Error)?.stack ?? err}`,
+            );
+          });
           this.markerClickTimer = undefined;
         }, 250);
         return;
