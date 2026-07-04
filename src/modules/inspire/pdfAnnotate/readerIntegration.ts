@@ -1480,6 +1480,13 @@ export class ReaderIntegration {
         if (attachmentItemID && cached.data && cached.data.length > 0) {
           this.setMaxKnownLabel(attachmentItemID, cached.data.length);
         }
+        // FTR-PDF-PARSE-PRELOAD: Warm the PDF parse even on a refs-cache HIT.
+        // This early return previously skipped startPdfParsing (only the
+        // cache-miss path started it), so returning sessions kept a cold PDF
+        // mapping and the first click parsed synchronously. Idempotent call.
+        if (attachmentItemID && getPref("pdf_parse_refs_list") === true) {
+          this.startPdfParsing(attachmentItemID);
+        }
         return;
       }
 
