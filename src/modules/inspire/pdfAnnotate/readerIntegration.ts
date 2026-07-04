@@ -10,6 +10,11 @@ import { getPref } from "../../../utils/prefs";
 import { deriveRecidFromItem } from "../apiUtils";
 import { CACHE_TTL } from "../constants";
 import { localCache } from "../localCache";
+import {
+  loadPersistedPdfParse,
+  persistPdfParse,
+  pdfMappingCacheKey,
+} from "./pdfMappingPersistence";
 import { MemoryMonitor } from "../memoryMonitor";
 import {
   fetchReferencesEntries,
@@ -1681,6 +1686,34 @@ export class ReaderIntegration {
         return;
       }
 
+      // S5: Try the on-disk parse cache before the expensive extract + parse.
+      // A valid hit warms the in-memory caches and skips re-parsing entirely.
+      const persisted = await loadPersistedPdfParse(
+        pdfMappingCacheKey(attachment),
+        pdfPath,
+      );
+      if (persisted) {
+        if (persisted.numeric) {
+          this.pdfMappingCache.set(attachmentItemID, persisted.numeric);
+          const labelNums = Array.from(persisted.numeric.labelCounts.keys())
+            .map((l) => parseInt(l, 10))
+            .filter((n) => !isNaN(n));
+          if (labelNums.length > 0) {
+            this.setMaxKnownLabel(attachmentItemID, Math.max(...labelNums));
+          }
+        }
+        if (persisted.authorYear) {
+          this.pdfAuthorYearMappingCache.set(
+            attachmentItemID,
+            persisted.authorYear,
+          );
+        }
+        Zotero.debug(
+          `[${config.addonName}] [PRELOAD-PDF] Loaded mapping from disk cache for attachment ${attachmentItemID}`,
+        );
+        return;
+      }
+
       // Extract text from fulltext cache
       const pdfText = await this.extractPDFTextFromCache(pdfPath);
       if (!pdfText) {
@@ -1754,6 +1787,22 @@ export class ReaderIntegration {
         this.pdfAuthorYearMappingCache.set(attachmentItemID, authorYearMapping);
         Zotero.debug(
           `[${config.addonName}] [PRELOAD-PDF] Cached author-year mapping (${authorYearMapping.authorYearMap.size} entries) for attachment ${attachmentItemID} (parent=${parentItemID}), source=${chosenCandidate.kind}, startIndex=${chosenCandidate.startIndex}`,
+        );
+      }
+
+      // S5: Persist to disk so future sessions skip re-parsing this PDF.
+      const numericToPersist =
+        mapping && mapping.totalLabels > 0 ? mapping : null;
+      const authorYearToPersist =
+        authorYearMapping && authorYearMapping.authorYearMap.size >= 5
+          ? authorYearMapping
+          : null;
+      if (numericToPersist || authorYearToPersist) {
+        await persistPdfParse(
+          pdfMappingCacheKey(attachment),
+          pdfPath,
+          numericToPersist,
+          authorYearToPersist,
         );
       }
     } catch (err) {

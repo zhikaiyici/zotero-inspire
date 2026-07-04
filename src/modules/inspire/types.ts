@@ -359,7 +359,8 @@ export type LocalCacheType =
   | "preprintCandidates"
   | "crossref"
   | "author_profile" // FTR-AUTHOR-PROFILE: Author profile cache (permanent)
-  | "author_papers"; // FTR-AUTHOR-PROFILE: Author papers list cache (permanent)
+  | "author_papers" // FTR-AUTHOR-PROFILE: Author papers list cache (permanent)
+  | "pdfmap"; // FTR-PDF-PARSE-PERSIST: parsed PDF reference-label mapping (invalidated by file mtime/size)
 
 /**
  * Local cache file structure for persistent storage.

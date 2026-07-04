@@ -37,6 +37,12 @@ import {
   renderPdfButtonIcon,
   PdfButtonState,
 } from "./pickerUI";
+// FTR-PDF-PARSE-PERSIST (S5): on-disk persistence for parsed PDF mappings
+import {
+  loadPersistedPdfParse,
+  persistPdfParse,
+  pdfMappingCacheKey,
+} from "./inspire/pdfAnnotate/pdfMappingPersistence";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Import from inspire/ submodules (avoid code duplication)
@@ -4042,6 +4048,41 @@ class InspireReferencePanelController {
       `[${config.addonName}] [PDF-PARSE] Found PDF: ${pdfPath} (attachment ${attachmentItemID})`,
     );
 
+    // S5: Try the on-disk parse cache before the expensive extract + parse.
+    const persistedParse = await loadPersistedPdfParse(
+      pdfMappingCacheKey(attachment),
+      pdfPath,
+    );
+    if (persistedParse?.numeric || persistedParse?.authorYear) {
+      if (persistedParse.numeric) {
+        labelMatcher.setPDFMapping(persistedParse.numeric);
+        getReaderIntegration().setPreloadedPDFMapping(
+          attachmentItemID,
+          persistedParse.numeric,
+        );
+        const labelNums = Array.from(persistedParse.numeric.labelCounts.keys())
+          .map((l) => parseInt(l, 10))
+          .filter((n) => !isNaN(n));
+        if (labelNums.length > 0) {
+          getReaderIntegration().setMaxKnownLabel(
+            attachmentItemID,
+            Math.max(...labelNums),
+          );
+        }
+      }
+      if (persistedParse.authorYear) {
+        labelMatcher.setAuthorYearMapping(persistedParse.authorYear);
+        getReaderIntegration().setPreloadedAuthorYearMapping(
+          attachmentItemID,
+          persistedParse.authorYear,
+        );
+      }
+      Zotero.debug(
+        `[${config.addonName}] [PDF-PARSE] Loaded mapping from disk cache for attachment ${attachmentItemID}`,
+      );
+      return true;
+    }
+
     // Extract text from PDF (last few pages where References usually are)
     try {
       // Use Zotero's fulltext cache to extract text
@@ -4178,6 +4219,21 @@ class InspireReferencePanelController {
       } else {
         Zotero.debug(
           `[${config.addonName}] [PDF-PARSE] Author-year parsing found ${authorYearMapping?.authorYearMap.size ?? 0} entries (not enough)`,
+        );
+      }
+
+      // S5: Persist to disk so future sessions skip re-parsing this PDF.
+      // Fire-and-forget: this runs on the click's await-chain, and the mapping
+      // is already applied above, so we don't block the interaction on the disk
+      // write. persistPdfParse never rejects (all I/O is internally guarded).
+      const numericToPersist = appliedNumeric ? mapping : null;
+      const authorYearToPersist = appliedAuthorYear ? authorYearMapping : null;
+      if (numericToPersist || authorYearToPersist) {
+        void persistPdfParse(
+          pdfMappingCacheKey(attachment),
+          pdfPath,
+          numericToPersist,
+          authorYearToPersist,
         );
       }
 
