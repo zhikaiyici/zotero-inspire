@@ -37,6 +37,12 @@ import {
   renderPdfButtonIcon,
   PdfButtonState,
 } from "./pickerUI";
+// FTR-PDF-PARSE-PERSIST (S5): on-disk persistence for parsed PDF mappings
+import {
+  loadPersistedPdfParse,
+  persistPdfParse,
+  pdfMappingCacheKey,
+} from "./inspire/pdfAnnotate/pdfMappingPersistence";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Import from inspire/ submodules (avoid code duplication)
@@ -2853,6 +2859,14 @@ class InspireReferencePanelController {
       `[${config.addonName}] [PDF-ANNOTATE] handleCitationLookup: parentItemID=${event.parentItemID}, currentItemID=${this.currentItemID}, labels=[${event.citation.labels.join(",")}]`,
     );
 
+    // S7: Presentations have no reference list — no citation lookup applies.
+    // Defensive: button creation is already suppressed for presentations, but
+    // guard here too so any future caller of handleCitationLookup is covered.
+    const lookupParentItem = Zotero.Items.get(event.parentItemID);
+    if (lookupParentItem?.itemType === "presentation") {
+      return;
+    }
+
     // FTR-MULTI-PDF-FIX-V4: Relaxed readerTabID check
     // Previously, we rejected events from tabs that weren't the "selected" one.
     // But with multi-PDF caching by attachmentItemID, each PDF has its own labelMatcher,
@@ -4054,6 +4068,41 @@ class InspireReferencePanelController {
       `[${config.addonName}] [PDF-PARSE] Found PDF: ${pdfPath} (attachment ${attachmentItemID})`,
     );
 
+    // S5: Try the on-disk parse cache before the expensive extract + parse.
+    const persistedParse = await loadPersistedPdfParse(
+      pdfMappingCacheKey(attachment),
+      pdfPath,
+    );
+    if (persistedParse?.numeric || persistedParse?.authorYear) {
+      if (persistedParse.numeric) {
+        labelMatcher.setPDFMapping(persistedParse.numeric);
+        getReaderIntegration().setPreloadedPDFMapping(
+          attachmentItemID,
+          persistedParse.numeric,
+        );
+        const labelNums = Array.from(persistedParse.numeric.labelCounts.keys())
+          .map((l) => parseInt(l, 10))
+          .filter((n) => !isNaN(n));
+        if (labelNums.length > 0) {
+          getReaderIntegration().setMaxKnownLabel(
+            attachmentItemID,
+            Math.max(...labelNums),
+          );
+        }
+      }
+      if (persistedParse.authorYear) {
+        labelMatcher.setAuthorYearMapping(persistedParse.authorYear);
+        getReaderIntegration().setPreloadedAuthorYearMapping(
+          attachmentItemID,
+          persistedParse.authorYear,
+        );
+      }
+      Zotero.debug(
+        `[${config.addonName}] [PDF-PARSE] Loaded mapping from disk cache for attachment ${attachmentItemID}`,
+      );
+      return true;
+    }
+
     // Extract text from PDF (last few pages where References usually are)
     try {
       // Use Zotero's fulltext cache to extract text
@@ -4190,6 +4239,21 @@ class InspireReferencePanelController {
       } else {
         Zotero.debug(
           `[${config.addonName}] [PDF-PARSE] Author-year parsing found ${authorYearMapping?.authorYearMap.size ?? 0} entries (not enough)`,
+        );
+      }
+
+      // S5: Persist to disk so future sessions skip re-parsing this PDF.
+      // Fire-and-forget: this runs on the click's await-chain, and the mapping
+      // is already applied above, so we don't block the interaction on the disk
+      // write. persistPdfParse never rejects (all I/O is internally guarded).
+      const numericToPersist = appliedNumeric ? mapping : null;
+      const authorYearToPersist = appliedAuthorYear ? authorYearMapping : null;
+      if (numericToPersist || authorYearToPersist) {
+        void persistPdfParse(
+          pdfMappingCacheKey(attachment),
+          pdfPath,
+          numericToPersist,
+          authorYearToPersist,
         );
       }
 
@@ -5709,7 +5773,13 @@ class InspireReferencePanelController {
           clearTimeout(this.markerClickTimer);
         }
         this.markerClickTimer = setTimeout(() => {
-          this.handleMarkerClick(entry, marker).catch(() => void 0);
+          this.handleMarkerClick(entry, marker).catch((err) => {
+            // Previously swallowed silently, which masked failures in the
+            // add/auto-find-full-text path. Log so problems are diagnosable.
+            Zotero.debug(
+              `[${config.addonName}] handleMarkerClick failed\n${(err as Error)?.stack ?? err}`,
+            );
+          });
           this.markerClickTimer = undefined;
         }, 250);
         return;
@@ -14571,6 +14641,8 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
       setTimeout(() => {
         this.restoreScrollPositionIfNeeded();
       }, 0);
+      // ISSUE-110: optionally fetch the PDF right after adding (opt-in pref).
+      void this.maybeAutoFindFullText(entry, newItem);
     }
   }
 
@@ -16609,6 +16681,48 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
         this.rowCache.set(entry.id, rowFromCaches);
       }
       this.updateRowStatus(entry);
+      // ISSUE-110: optionally fetch the PDF right after adding (opt-in pref).
+      void this.maybeAutoFindFullText(entry, newItem);
+    }
+  }
+
+  /**
+   * ISSUE-110: If the "auto find full text on import" pref is enabled, run
+   * Zotero's Find Full Text (Attachments.addAvailableFiles) on a freshly-imported
+   * item so that adding a reference and fetching its PDF are a single step.
+   * Fire-and-forget: Zotero shows its own progress UI, and this never rejects
+   * (all errors are caught and logged).
+   */
+  private async maybeAutoFindFullText(
+    entry: InspireReferenceEntry,
+    item: Zotero.Item,
+  ): Promise<void> {
+    try {
+      if (getPref("auto_find_fulltext_on_import") !== true) {
+        return;
+      }
+      // Mirror the manual Find Full Text panel button: run in the main-window
+      // Zotero context, then poll for the attachment and refresh the panel row.
+      const mainWin = Zotero.getMainWindow?.() as any;
+      const Z: any = mainWin?.Zotero || Zotero;
+      const target =
+        (typeof Z.Items?.get === "function" ? Z.Items.get(item.id) : null) ||
+        item;
+      const attachmentsAPI: any = Z.Attachments || Zotero.Attachments;
+      if (!target || typeof attachmentsAPI?.addAvailableFiles !== "function") {
+        return;
+      }
+      await attachmentsAPI.addAvailableFiles([target]);
+      const pdfID = await this.waitForFirstPdfAttachmentID(item.id);
+      if (pdfID) {
+        await this.notifyItemModifiedForUI(item.id, pdfID);
+        // Refresh the panel row so the find-PDF marker becomes the PDF marker.
+        this.updateRowStatus(entry);
+      }
+    } catch (err) {
+      Zotero.debug(
+        `[${config.addonName}] Auto find full text on import failed: ${err}`,
+      );
     }
   }
 
@@ -16647,14 +16761,18 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
     }
 
     await setInspireMeta(newItem, meta as jsobject, "full");
-    await saveItemWithPendingInspireNote(newItem);
+    // Keep the reviewed item selected: add the new item (and its child notes)
+    // with skipSelect so Zotero's item tree does not auto-select the freshly
+    // added row. Without this, selection jumps off the paper being reviewed and
+    // the references panel reloads for a different item.
+    await saveItemWithPendingInspireNote(newItem, { skipSelect: true });
 
     if (target.note) {
       const newNote = new Zotero.Item("note");
       newNote.setNote(target.note);
       newNote.parentID = newItem.id;
       newNote.libraryID = newItem.libraryID;
-      await newNote.saveTx();
+      await newNote.saveTx({ skipSelect: true });
     }
 
     this.rememberRecentTarget(target.primaryRowID);

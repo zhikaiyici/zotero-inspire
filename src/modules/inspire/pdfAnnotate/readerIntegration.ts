@@ -10,6 +10,11 @@ import { getPref } from "../../../utils/prefs";
 import { deriveRecidFromItem } from "../apiUtils";
 import { CACHE_TTL } from "../constants";
 import { localCache } from "../localCache";
+import {
+  loadPersistedPdfParse,
+  persistPdfParse,
+  pdfMappingCacheKey,
+} from "./pdfMappingPersistence";
 import { MemoryMonitor } from "../memoryMonitor";
 import {
   fetchReferencesEntries,
@@ -92,6 +97,10 @@ interface TransientState {
   pdfParsingItems: Set<number>;
   /** FTR-PRELOAD-AWAIT: Track PDF parsing promises for await support */
   pdfParsingPromises: Map<number, Promise<void>>;
+  /** S2: FIFO queue of attachment IDs awaiting a background PDF parse (concurrency=1) */
+  pdfParseQueue: number[];
+  /** S2: true while a background PDF parse is running/scheduled (serialization guard) */
+  pdfParseRunning: boolean;
 }
 
 /**
@@ -108,6 +117,8 @@ function createInitialTransientState(): TransientState {
     itemsAwaitingRecid: new Set(),
     pdfParsingItems: new Set(),
     pdfParsingPromises: new Map(),
+    pdfParseQueue: [],
+    pdfParseRunning: false,
   };
 }
 
@@ -424,6 +435,25 @@ export class ReaderIntegration {
   }
 
   /**
+   * S7: A "presentation" item (talk / slides) has no reference list, so the
+   * citation-lookup / reference-parse feature does not apply to it. Resolves the
+   * reader's parent item and checks its Zotero item type.
+   */
+  private isPresentationReader(reader: any): boolean {
+    try {
+      const itemID = reader?.itemID;
+      if (!itemID) return false;
+      const item = Zotero.Items.get(itemID);
+      if (!item) return false;
+      const parentItemID = item.parentItemID || itemID;
+      const parentItem = Zotero.Items.get(parentItemID);
+      return parentItem?.itemType === "presentation";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Handle text selection popup event.
    * Adds "Look up in References" button when citation is detected.
    */
@@ -434,6 +464,15 @@ export class ReaderIntegration {
     append: (elem: Element) => void;
   }): void {
     const { reader, doc, params, append } = args;
+
+    // S7: A "presentation" item has no reference list, so neither the citation
+    // buttons nor the reference/PDF preload apply — bail before either.
+    if (this.isPresentationReader(reader)) {
+      debugLog(
+        `[${config.addonName}] [PDF-ANNOTATE] Skipping presentation reader (no reference list)`,
+      );
+      return;
+    }
 
     // Debug: log all args structure to understand what Zotero provides
     debugLog(
@@ -1411,6 +1450,9 @@ export class ReaderIntegration {
       const parentItem = Zotero.Items.get(parentItemID);
       if (!parentItem || !parentItem.isRegularItem()) return;
 
+      // S7: Presentations have no reference list — nothing to preload/parse.
+      if (parentItem?.itemType === "presentation") return;
+
       // Get recid from parent item
       const recid = deriveRecidFromItem(parentItem);
       if (!recid) return;
@@ -1480,6 +1522,13 @@ export class ReaderIntegration {
         if (attachmentItemID && cached.data && cached.data.length > 0) {
           this.setMaxKnownLabel(attachmentItemID, cached.data.length);
         }
+        // FTR-PDF-PARSE-PRELOAD: Warm the PDF parse even on a refs-cache HIT.
+        // This early return previously skipped startPdfParsing (only the
+        // cache-miss path started it), so returning sessions kept a cold PDF
+        // mapping and the first click parsed synchronously. Idempotent call.
+        if (attachmentItemID && getPref("pdf_parse_refs_list") === true) {
+          this.startPdfParsing(attachmentItemID);
+        }
         return;
       }
 
@@ -1540,25 +1589,92 @@ export class ReaderIntegration {
     const parentItemID = attachment.parentItemID;
     if (!parentItemID) return;
 
-    // Skip if already parsing or cached - use attachmentItemID as key
+    // Skip if already parsing, cached, or already queued.
     // FTR-MULTI-PDF-FIX: Each PDF attachment has its own cache entry
     if (this.transientState.pdfParsingItems.has(attachmentItemID)) return;
     if (this.pdfMappingCache.has(attachmentItemID)) return;
+    if (this.transientState.pdfParseQueue.includes(attachmentItemID)) return;
 
-    // Create and track the parsing promise - use attachmentItemID as key
-    const parsePromise = this.preloadPDFParsing(attachmentItemID);
-    this.transientState.pdfParsingPromises.set(attachmentItemID, parsePromise);
+    // S2: Serialize background PDF parses (concurrency = 1). A session restore
+    // re-opens every previously-open reader tab at once; without this a burst of
+    // tabs would each start a CPU-heavy parse simultaneously. Requests queue and
+    // drain one at a time, each scheduled on idle so the UI stays responsive.
+    this.transientState.pdfParseQueue.push(attachmentItemID);
+    this.pumpPdfParseQueue();
+  }
 
-    // Clean up promise map when done
-    parsePromise
-      .finally(() => {
-        this.transientState.pdfParsingPromises.delete(attachmentItemID);
-      })
-      .catch((err) => {
-        Zotero.debug(
-          `[${config.addonName}] [PRELOAD] PDF parsing preload failed: ${err}`,
-        );
-      });
+  /**
+   * S2: Drain the background PDF-parse queue one item at a time (concurrency=1).
+   * `pdfParseRunning` is set synchronously before scheduling so a second pump
+   * (e.g. from a concurrent trigger) cannot start an overlapping parse during
+   * the idle-callback gap. Each parse re-pumps the queue when it settles.
+   */
+  private pumpPdfParseQueue(): void {
+    if (this.transientState.pdfParseRunning) return;
+
+    // Skip entries that became cached / in-flight while they sat in the queue.
+    // (A concurrent click on the active tab may inline-parse a still-queued
+    // item — safe: same mapping, and preloadPDFParsing re-checks the cache.)
+    let next = this.transientState.pdfParseQueue.shift();
+    while (
+      next !== undefined &&
+      (this.pdfMappingCache.has(next) ||
+        this.transientState.pdfParsingItems.has(next))
+    ) {
+      next = this.transientState.pdfParseQueue.shift();
+    }
+    if (next === undefined) return;
+
+    const attachmentItemID = next;
+    this.transientState.pdfParseRunning = true;
+    // Snapshot the state object; if cleanup() swaps transientState before the
+    // idle callback fires, bail rather than resurrect a parse into a fresh or
+    // torn-down session (flagged by both reviewers).
+    const stateAtSchedule = this.transientState;
+
+    const runParse = () => {
+      if (this.transientState !== stateAtSchedule) return;
+      const parsePromise = this.preloadPDFParsing(attachmentItemID);
+      this.transientState.pdfParsingPromises.set(attachmentItemID, parsePromise);
+      parsePromise
+        .catch((err) => {
+          Zotero.debug(
+            `[${config.addonName}] [PRELOAD] PDF parsing preload failed: ${err}`,
+          );
+        })
+        .finally(() => {
+          this.transientState.pdfParsingPromises.delete(attachmentItemID);
+          this.transientState.pdfParseRunning = false;
+          // Drain the next queued parse, if any.
+          this.pumpPdfParseQueue();
+        });
+    };
+
+    this.scheduleIdle(runParse);
+  }
+
+  /**
+   * S2: Run a callback when the main thread is idle, so CPU-heavy parse work
+   * yields to the UI. Falls back to a short timeout where requestIdleCallback is
+   * unavailable.
+   */
+  private scheduleIdle(fn: () => void): void {
+    try {
+      const win = Zotero.getMainWindow() as any;
+      if (win && typeof win.requestIdleCallback === "function") {
+        win.requestIdleCallback(fn, { timeout: 2000 });
+        return;
+      }
+      if (win && typeof win.setTimeout === "function") {
+        win.setTimeout(fn, 200);
+        return;
+      }
+    } catch (err) {
+      Zotero.debug(
+        `[${config.addonName}] [PRELOAD] scheduleIdle fell back to setTimeout: ${err}`,
+      );
+    }
+    setTimeout(fn, 200);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1597,6 +1713,34 @@ export class ReaderIntegration {
       if (!pdfPath) {
         Zotero.debug(
           `[${config.addonName}] [PRELOAD-PDF] No PDF path for attachment ${attachmentItemID}`,
+        );
+        return;
+      }
+
+      // S5: Try the on-disk parse cache before the expensive extract + parse.
+      // A valid hit warms the in-memory caches and skips re-parsing entirely.
+      const persisted = await loadPersistedPdfParse(
+        pdfMappingCacheKey(attachment),
+        pdfPath,
+      );
+      if (persisted) {
+        if (persisted.numeric) {
+          this.pdfMappingCache.set(attachmentItemID, persisted.numeric);
+          const labelNums = Array.from(persisted.numeric.labelCounts.keys())
+            .map((l) => parseInt(l, 10))
+            .filter((n) => !isNaN(n));
+          if (labelNums.length > 0) {
+            this.setMaxKnownLabel(attachmentItemID, Math.max(...labelNums));
+          }
+        }
+        if (persisted.authorYear) {
+          this.pdfAuthorYearMappingCache.set(
+            attachmentItemID,
+            persisted.authorYear,
+          );
+        }
+        Zotero.debug(
+          `[${config.addonName}] [PRELOAD-PDF] Loaded mapping from disk cache for attachment ${attachmentItemID}`,
         );
         return;
       }
@@ -1674,6 +1818,22 @@ export class ReaderIntegration {
         this.pdfAuthorYearMappingCache.set(attachmentItemID, authorYearMapping);
         Zotero.debug(
           `[${config.addonName}] [PRELOAD-PDF] Cached author-year mapping (${authorYearMapping.authorYearMap.size} entries) for attachment ${attachmentItemID} (parent=${parentItemID}), source=${chosenCandidate.kind}, startIndex=${chosenCandidate.startIndex}`,
+        );
+      }
+
+      // S5: Persist to disk so future sessions skip re-parsing this PDF.
+      const numericToPersist =
+        mapping && mapping.totalLabels > 0 ? mapping : null;
+      const authorYearToPersist =
+        authorYearMapping && authorYearMapping.authorYearMap.size >= 5
+          ? authorYearMapping
+          : null;
+      if (numericToPersist || authorYearToPersist) {
+        await persistPdfParse(
+          pdfMappingCacheKey(attachment),
+          pdfPath,
+          numericToPersist,
+          authorYearToPersist,
         );
       }
     } catch (err) {
@@ -2544,6 +2704,37 @@ export class ReaderIntegration {
         }
       }
 
+      // S7: Presentations have no reference list — skip the citation-lookup /
+      // reference-parse feature entirely (format detection, overlay pre-warm,
+      // preload). Recid tracking above still runs for the panel.
+      if (parentItem?.itemType === "presentation") {
+        return;
+      }
+
+      // S2: Only the ACTIVE reader tab warms citation-format detection and
+      // reference/PDF preload. On session restore Zotero fires an "add" event
+      // for every restored tab; without this gate each background tab would
+      // kick off a CPU-heavy PDF parse (a restore stampede). Background tabs
+      // warm lazily when the user switches to them — a later "select" event
+      // re-enters this handler with the tab now selected.
+      if (String(ReaderTabHelper.getSelectedTabID()) !== tabID) {
+        return;
+      }
+
+      // S6: Pre-warm the overlay reference mapping for the active tab so the
+      // first citation HOVER doesn't pay a cold getProcessedData()/overlay
+      // build. Idempotent (overlayMappingCache-guarded) and returns null
+      // gracefully if the reader isn't ready yet (the hover builds it on
+      // demand then). Scheduled on idle so it never competes with rendering.
+      this.scheduleIdle(() => {
+        if (!this.initialized) return;
+        // Re-check at execution time: the user may have switched or closed tabs
+        // during the idle wait, so only pre-warm if this is still the active
+        // tab (avoids building overlays for a no-longer-visible reader).
+        if (String(ReaderTabHelper.getSelectedTabID()) !== tabID) return;
+        void this.buildMappingFromOverlays(reader);
+      });
+
       // Skip citation format detection if already detected or currently scanning
       if (
         this.transientState.citationFormatByItem.has(itemID) ||
@@ -2588,6 +2779,11 @@ export class ReaderIntegration {
       this.transientState.maxKnownLabelByItem.delete(attachmentItemID);
       this.transientState.pdfParsingItems.delete(attachmentItemID);
       this.transientState.pdfParsingPromises.delete(attachmentItemID);
+      const queueIdx =
+        this.transientState.pdfParseQueue.indexOf(attachmentItemID);
+      if (queueIdx !== -1) {
+        this.transientState.pdfParseQueue.splice(queueIdx, 1);
+      }
 
       // Best-effort: clear caches keyed by attachment item ID
       this.pdfMappingCache.delete(attachmentItemID);

@@ -96,6 +96,11 @@
     type="bool"
   />
   <preference
+    id="pref-auto_find_fulltext_on_import"
+    name="__prefsPrefix__.auto_find_fulltext_on_import"
+    type="bool"
+  />
+  <preference
     id="pref-tag_enable"
     name="__prefsPrefix__.tag_enable"
     type="bool"
@@ -371,6 +376,17 @@
       <html:p
         class="zinspire-pref-desc"
         data-l10n-id="pref-max-authors-desc"
+      ></html:p>
+    </vbox>
+    <vbox class="zinspire-pref-row" style="margin-top: 8px">
+      <checkbox
+        id="zotero-prefpane-__addonRef__-auto_find_fulltext_on_import"
+        preference="extensions.zotero.inspiremeta.auto_find_fulltext_on_import"
+        data-l10n-id="pref-auto-find-fulltext"
+      />
+      <html:p
+        class="zinspire-pref-desc"
+        data-l10n-id="pref-auto-find-fulltext-desc"
       ></html:p>
     </vbox>
     <vbox class="zinspire-pref-row" style="margin-top: 8px">

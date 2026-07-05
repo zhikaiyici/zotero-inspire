@@ -2788,20 +2788,34 @@ async function queueOrUpsertInspireNote(item: Zotero.Item, noteText?: string) {
   delete itemWithPending._zinspirePendingInspireNote;
 }
 
-async function flushPendingInspireNote(item: Zotero.Item) {
+async function flushPendingInspireNote(
+  item: Zotero.Item,
+  saveOptions?: Parameters<Zotero.Item["saveTx"]>[0],
+) {
   const itemWithPending = item as ItemWithPendingInspireNote;
   if (item.id && itemWithPending._zinspirePendingInspireNote) {
-    await upsertInspireNote(item, itemWithPending._zinspirePendingInspireNote);
+    await upsertInspireNote(
+      item,
+      itemWithPending._zinspirePendingInspireNote,
+      saveOptions,
+    );
     delete itemWithPending._zinspirePendingInspireNote;
   }
 }
 
-export async function saveItemWithPendingInspireNote(item: Zotero.Item) {
-  await item.saveTx();
-  await flushPendingInspireNote(item);
+export async function saveItemWithPendingInspireNote(
+  item: Zotero.Item,
+  saveOptions?: Parameters<Zotero.Item["saveTx"]>[0],
+) {
+  await item.saveTx(saveOptions);
+  await flushPendingInspireNote(item, saveOptions);
 }
 
-async function upsertInspireNote(item: Zotero.Item, noteText: string) {
+async function upsertInspireNote(
+  item: Zotero.Item,
+  noteText: string,
+  saveOptions?: Parameters<Zotero.Item["saveTx"]>[0],
+) {
   if (!item.id) {
     return;
   }
@@ -2841,7 +2855,7 @@ async function upsertInspireNote(item: Zotero.Item, noteText: string) {
   if (noteToUpdate) {
     if (noteToUpdate.getNote() !== noteText) {
       noteToUpdate.setNote(noteText);
-      await noteToUpdate.saveTx();
+      await noteToUpdate.saveTx(saveOptions);
     }
     return;
   }
@@ -2850,7 +2864,7 @@ async function upsertInspireNote(item: Zotero.Item, noteText: string) {
   newNote.setNote(noteText);
   newNote.parentID = item.id;
   newNote.libraryID = item.libraryID;
-  await newNote.saveTx();
+  await newNote.saveTx(saveOptions);
 }
 
 function normalizeInspireNoteContent(note?: string): string {
@@ -3047,7 +3061,16 @@ function setArxivCategoryTag(item: Zotero.Item) {
   if (primaryCategory) {
     if (!item.hasTag(primaryCategory)) {
       item.addTag(primaryCategory);
-      item.saveTx();
+      // Only persist here for an already-saved item. For a NEW (unsaved) item
+      // the caller (e.g. importReference) saves it right after, and a second
+      // concurrent saveTx on the same new item races that save -> duplicate
+      // INSERT -> "NOT NULL constraint failed: items.itemTypeID", which throws
+      // and aborts the whole add flow (including auto-find-full-text). The
+      // in-memory tag added above is persisted by the caller's save.
+      // skipSelect keeps the (already-saved) item's tree selection unchanged.
+      if (item.id) {
+        item.saveTx({ skipSelect: true });
+      }
     }
   }
 }

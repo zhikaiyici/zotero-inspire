@@ -81,6 +81,8 @@ export type FluentMessageId =
   | 'pref-arxiv-in-journal-abbrev-desc'
   | 'pref-arxiv-tag'
   | 'pref-arxiv-tag1'
+  | 'pref-auto-find-fulltext'
+  | 'pref-auto-find-fulltext-desc'
   | 'pref-chart-default-collapsed'
   | 'pref-chart-enable'
   | 'pref-chart-enable-desc'

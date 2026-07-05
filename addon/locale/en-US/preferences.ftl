@@ -93,6 +93,9 @@ pref-pdf-force-mapping-desc = If PDF and INSPIRE reference lists diverge (e.g., 
 pref-reader-auto-reopen =
     .label = Reopen reader tab when navigating back/forward
 pref-reader-auto-reopen-desc = When enabled, if the reader tab was closed, it will be reopened automatically when using Back or Forward navigation.
+pref-auto-find-fulltext =
+    .label = Auto "Find Full Text" after adding to library
+pref-auto-find-fulltext-desc = When you add a reference to your library from the panel, automatically run Zotero's Find Full Text on the new item to fetch its PDF (single-item adds only, not batch import).
 
 pref-nofound-enable =
     .label = Add tag to items without INSPIRE record

@@ -551,8 +551,13 @@ class InspireLocalCache {
 
     // Determine TTL based on type
     let ttl: number;
-    if (type === "refs" || type === "preprintCandidates" || type === "citation_graph") {
-      ttl = DEFAULT_TTL_REFS; // keep indefinitely for refs and candidate list
+    if (
+      type === "refs" ||
+      type === "preprintCandidates" ||
+      type === "citation_graph" ||
+      type === "pdfmap"
+    ) {
+      ttl = DEFAULT_TTL_REFS; // keep indefinitely (pdfmap invalidated by file mtime/size)
     } else if (type === "author_profile") {
       ttl = DEFAULT_TTL_AUTHOR_PROFILE; // 2 hours for author profiles (offline fallback)
     } else {
@@ -844,6 +849,7 @@ class InspireLocalCache {
         "cited",
         "author",
         "refs",
+        "pdfmap",
       ];
 
       const getTypeFromFilePath = (filePath: string): LocalCacheType | null => {
@@ -855,7 +861,13 @@ class InspireLocalCache {
       };
 
       const getTTLHoursForType = (t: LocalCacheType): number => {
-        if (t === "refs" || t === "preprintCandidates") return DEFAULT_TTL_REFS;
+        if (
+          t === "refs" ||
+          t === "preprintCandidates" ||
+          t === "citation_graph" ||
+          t === "pdfmap"
+        )
+          return DEFAULT_TTL_REFS;
         if (t === "author_profile") return DEFAULT_TTL_AUTHOR_PROFILE;
         return this.getTTLHours();
       };
