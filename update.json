@@ -3,9 +3,9 @@
     "zoteroinspire@itp.ac.cn": {
       "updates": [
         {
-          "version": "3.0.4",
-          "update_link": "https://github.com/fkguo/zotero-inspire/releases/download/v3.0.4/zotero-inspire.xpi",
-          "update_hash": "sha512:2789ad188ce1149665af2f5ad64ae75a81df81f0d1cedb3bc5428dd7584d0f2caa726270f51325c5db272fc7dd3b94ebe62d283efced035606dc9ac1abf7de50",
+          "version": "3.0.5",
+          "update_link": "https://github.com/fkguo/zotero-inspire/releases/download/v3.0.5/zotero-inspire.xpi",
+          "update_hash": "sha512:cadbdb4c7248d261a38f6b0ffbfaed312e26207b87567388237a6edb68af86883213e806defda33743de0b41e10585750587c45bfeb1e680816e008e23f14190",
           "applications": {
             "zotero": {
               "strict_min_version": "6.999",
