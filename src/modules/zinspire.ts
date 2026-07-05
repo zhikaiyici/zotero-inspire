@@ -16749,14 +16749,18 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
     }
 
     await setInspireMeta(newItem, meta as jsobject, "full");
-    await saveItemWithPendingInspireNote(newItem);
+    // Keep the reviewed item selected: add the new item (and its child notes)
+    // with skipSelect so Zotero's item tree does not auto-select the freshly
+    // added row. Without this, selection jumps off the paper being reviewed and
+    // the references panel reloads for a different item.
+    await saveItemWithPendingInspireNote(newItem, { skipSelect: true });
 
     if (target.note) {
       const newNote = new Zotero.Item("note");
       newNote.setNote(target.note);
       newNote.parentID = newItem.id;
       newNote.libraryID = newItem.libraryID;
-      await newNote.saveTx();
+      await newNote.saveTx({ skipSelect: true });
     }
 
     this.rememberRecentTarget(target.primaryRowID);
