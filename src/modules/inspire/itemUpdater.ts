@@ -2945,11 +2945,16 @@ function setArxivCategoryTag(item: Zotero.Item) {
   if (primaryCategory) {
     if (!item.hasTag(primaryCategory)) {
       item.addTag(primaryCategory);
-      // Adding this background category tag must never move the item-tree
-      // selection. For a freshly imported item this is the first save (the
-      // 'add' event), so without skipSelect Zotero would auto-select the new
-      // row and jump the selection off the item being reviewed.
-      item.saveTx({ skipSelect: true });
+      // Only persist here for an already-saved item. For a NEW (unsaved) item
+      // the caller (e.g. importReference) saves it right after, and a second
+      // concurrent saveTx on the same new item races that save -> duplicate
+      // INSERT -> "NOT NULL constraint failed: items.itemTypeID", which throws
+      // and aborts the whole add flow (including auto-find-full-text). The
+      // in-memory tag added above is persisted by the caller's save.
+      // skipSelect keeps the (already-saved) item's tree selection unchanged.
+      if (item.id) {
+        item.saveTx({ skipSelect: true });
+      }
     }
   }
 }

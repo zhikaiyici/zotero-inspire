@@ -1706,14 +1706,17 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
     }
 
     await setInspireMeta(newItem, meta as any, "full");
-    await saveItemWithPendingInspireNote(newItem);
+    // Add the new item and its child note without letting Zotero auto-select
+    // the new row, so the current library selection is not disturbed
+    // (consistent with importReference).
+    await saveItemWithPendingInspireNote(newItem, { skipSelect: true });
 
     if (target.note) {
       const note = new Zotero.Item("note");
       note.setNote(target.note);
       note.parentID = newItem.id;
       note.libraryID = newItem.libraryID;
-      await note.saveTx();
+      await note.saveTx({ skipSelect: true });
     }
 
     entry.localItemID = newItem.id;
