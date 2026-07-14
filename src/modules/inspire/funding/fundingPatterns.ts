@@ -12,13 +12,18 @@ export const FUNDER_PATTERNS: FunderPattern[] = [
       "基金委",
       "NNSFC",
       "Natural Science Foundation of China",
+      "National Science Foundation of China",
       "NSFC of China",
     ],
     patterns: [
       // NSFC Grant No.: 8-11 digits, first digit 1-8 (Dept), U (Joint), 9 (Major)
       // Examples: 12125507 (8), 12361141819 (11), U2032102 (U+7)
-      // Note: Some papers misspell as "Nature" instead of "Natural", or use plural "Foundations"
-      /(?:NSFC|国家自然科学基金|基金委|NNSF[C]?|Natura?l?\s+(?:Science\s+)?Foundations?\s+of\s+China|National\s+Nature\s+Science\s+Foundations?\s+of\s+China)[^0-9]{0,40}(?:No\.?\s*|Grant\s*(?:No\.?)?\s*|Nos?\.?\s*)?([1-9U]\d{7,10})/gi,
+      // Full-name variants seen in acknowledgments (all disambiguated by "of China"):
+      //   "National Natural Science Foundation of China" (correct)
+      //   "Natural Science Foundation of China" (drops "National")
+      //   "National Science Foundation of China" (drops "Natural")
+      //   "National Nature Science Foundation of China" ("Natural" -> "Nature")
+      /(?:NSFC|国家自然科学基金|基金委|NNSF[C]?|(?:National\s+)?Natura?l?\s+(?:Science\s+)?Foundations?\s+of\s+China|National\s+(?:Nature\s+)?Science\s+Foundations?\s+of\s+China)[^0-9]{0,40}(?:No\.?\s*|Grant\s*(?:No\.?)?\s*|Nos?\.?\s*)?([1-9U]\d{7,10})/gi,
       /(?:supported|funded|granted)\s+by\s+(?:the\s+)?NSFC[^0-9]{0,20}([1-9U]\d{7,10})/gi,
       /([1-9U]\d{7,10})\s*(?:\(NSFC\)|from\s+NSFC)/gi,
     ],
@@ -35,6 +40,8 @@ export const FUNDER_PATTERNS: FunderPattern[] = [
     aliases: [
       "科技部",
       "国家重点研发计划",
+      "重点研发计划",
+      "重点研发",
       "National Key R&D Program of China",
       "National Key R&D Program",
       "National Key Research and Development Program",
