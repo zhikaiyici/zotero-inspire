@@ -177,9 +177,19 @@ pref-collab-tag-template-label = 标签格式：
 pref-collab-tag-template-desc = 使用 {"{name}"} 作为合作组名称占位符。示例：{"{name}"}、#collab/{"{name}"}、collab:{"{name}"}
 
 pref-funding-extraction = 基金提取
-pref-funding-china-only =
-    .label = 仅提取中国资助机构
-pref-funding-china-only-desc = 启用后仅提取中国资助机构的基金信息（国自然、中科院、科技部等）。禁用则提取所有资助者（包括 DOE、NSF、ERC 等）。
+pref-funding-mode-all =
+    .label = 提取所有资助机构
+pref-funding-mode-china =
+    .label = 仅中国资助机构（国自然、中科院、科技部等）
+pref-funding-mode-nsfc =
+    .label = 仅提取国自然（NSFC）基金号
+pref-funding-mode-custom =
+    .label = 自定义资助机构列表
+pref-funding-mode-desc = 选择保留哪些资助者。“仅国自然”会涵盖致谢中各种写法（NSFC、NNSFC、National Natural Science Foundation of China、国家自然科学基金等）。“所有”包含 DOE、NSF、ERC 等。
+pref-funding-custom-label = 资助机构：
+pref-funding-custom-placeholder =
+    .placeholder = 例如 NSFC, MoST, CAS
+pref-funding-custom-desc = 仅在“自定义列表”模式下生效。填写简称或全称，用逗号或换行分隔（例如 NSFC、科技部、DOE）。不区分大小写。
 
 pref-dev = 开发者
 pref-dev-panel-layout =
