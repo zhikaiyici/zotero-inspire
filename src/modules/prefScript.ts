@@ -11,6 +11,7 @@ export function registerPrefsScripts(_window: Window) {
   ) as HTMLInputElement;
   input.disabled = !getPref("tag_enable");
   bindTagEnabler();
+  bindFundingModeToggler();
 }
 
 function bindTagEnabler() {
@@ -25,5 +26,30 @@ function bindTagEnabler() {
       ) as HTMLInputElement;
       input.disabled = !checkbox.checked;
       setPref("tag_enable", checkbox.checked);
+    });
+}
+
+/**
+ * Enable the custom-funder text box only while the "Custom list" mode is
+ * selected, so it is clear the field is otherwise inactive.
+ */
+function bindFundingModeToggler() {
+  const doc = addon.data.prefs!.window.document;
+  const customInput = doc.querySelector(
+    `#zotero-prefpane-${config.addonRef}-funding_filter_custom`,
+  ) as HTMLInputElement | null;
+  if (!customInput) return;
+
+  const sync = () => {
+    customInput.disabled = getPref("funding_filter_mode") !== "custom";
+  };
+  sync();
+
+  doc
+    .querySelector(`#zotero-prefpane-${config.addonRef}-funding_filter_mode`)
+    ?.addEventListener("command", () => {
+      // The radiogroup writes the pref via its `preference` binding; read it back
+      // on the next tick so the disabled state reflects the new selection.
+      addon.data.prefs!.window.setTimeout(sync, 0);
     });
 }

@@ -177,9 +177,19 @@ pref-collab-tag-template-label = Tag format:
 pref-collab-tag-template-desc = Use {"{name}"} for collaboration name. Examples: {"{name}"}, #collab/{"{name}"}, collab:{"{name}"}
 
 pref-funding-extraction = Funding Extraction
-pref-funding-china-only =
-    .label = Extract only Chinese funding agencies
-pref-funding-china-only-desc = When enabled, only extract funding info from Chinese agencies (NSFC, CAS, MoST, etc.). Disable to extract all funders including DOE, NSF, ERC, etc.
+pref-funding-mode-all =
+    .label = Extract all funding agencies
+pref-funding-mode-china =
+    .label = Chinese funding agencies only (NSFC, CAS, MoST, ...)
+pref-funding-mode-nsfc =
+    .label = NSFC grant numbers only
+pref-funding-mode-custom =
+    .label = Custom list of funding agencies
+pref-funding-mode-desc = Choose which funders to keep. "NSFC only" captures every way the acknowledgment writes it (NSFC, NNSFC, National Natural Science Foundation of China, 国家自然科学基金, ...). "All" includes DOE, NSF, ERC, etc.
+pref-funding-custom-label = Funders:
+pref-funding-custom-placeholder =
+    .placeholder = e.g. NSFC, MoST, CAS
+pref-funding-custom-desc = Used only for "Custom list". Enter abbreviations or full names, separated by commas or new lines (e.g. NSFC, Ministry of Science and Technology of China, DOE). Case-insensitive.
 
 pref-dev = Developer
 pref-dev-panel-layout =

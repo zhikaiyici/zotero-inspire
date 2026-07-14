@@ -53,7 +53,10 @@ pref("__prefsPrefix__.collab_tag_enable", false); // Enable collaboration taggin
 pref("__prefsPrefix__.collab_tag_auto", false); // Auto-add tags when updating/importing
 pref("__prefsPrefix__.collab_tag_template", "{name}"); // Tag format template ({name} = collaboration name)
 // Funding extraction settings (FTR-FUNDING-EXTRACTION)
-pref("__prefsPrefix__.funding_china_only", true); // Only extract Chinese funding agencies (NSFC, CAS, MoST, etc.)
+pref("__prefsPrefix__.funding_china_only", true); // Deprecated: superseded by funding_filter_mode; read once for migration
+pref("__prefsPrefix__.funding_filter_mode", "china"); // all | china | nsfc | custom
+pref("__prefsPrefix__.funding_filter_custom", ""); // Custom funder list (abbreviations or full names, separated by comma/newline)
+pref("__prefsPrefix__.funding_pref_migrated", false); // one-time guard for the funding_china_only -> funding_filter_mode migration
 // Favorite authors (FTR-FAVORITE-AUTHORS)
 pref("__prefsPrefix__.favorite_authors", "[]"); // JSON array of FavoriteAuthor objects
 // Favorite papers (FTR-FAVORITE-PAPERS)

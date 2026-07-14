@@ -56,9 +56,17 @@ async function onStartup() {
   ZInsUtils.registerPrefs();
   ZInsUtils.registerNotifier();
 
-  // Initialize new preference defaults for existing installations (FTR-FUNDING-EXTRACTION)
-  if (getPref("funding_china_only") === undefined) {
-    setPref("funding_china_only", true);
+  // One-time migration: the legacy china-only boolean (FTR-FUNDING-EXTRACTION)
+  // is superseded by funding_filter_mode. funding_filter_mode has a default of
+  // "china", so we cannot detect "unset" by an undefined check; use an explicit
+  // one-shot guard instead. Only an existing user who had explicitly turned the
+  // china-only filter OFF (funding_china_only === false, i.e. "extract all")
+  // needs to be moved to "all"; every other case keeps the "china" default.
+  if (getPref("funding_pref_migrated") !== true) {
+    if (getPref("funding_china_only") === false) {
+      setPref("funding_filter_mode", "all");
+    }
+    setPref("funding_pref_migrated", true);
   }
 
   await onMainWindowLoad(Zotero.getMainWindow());

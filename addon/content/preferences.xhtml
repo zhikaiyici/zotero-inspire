@@ -219,9 +219,14 @@
   />
   <!-- Funding Extraction Settings (FTR-FUNDING-EXTRACTION) -->
   <preference
-    id="pref-funding_china_only"
-    name="__prefsPrefix__.funding_china_only"
-    type="bool"
+    id="pref-funding_filter_mode"
+    name="__prefsPrefix__.funding_filter_mode"
+    type="string"
+  />
+  <preference
+    id="pref-funding_filter_custom"
+    name="__prefsPrefix__.funding_filter_custom"
+    type="string"
   />
 </preferences>
 <groupbox
@@ -910,15 +915,44 @@
       data-l10n-id="pref-funding-extraction"
     ></html:h3>
     <vbox class="zinspire-pref-row">
-      <checkbox
-        id="zotero-prefpane-__addonRef__-funding_china_only"
-        preference="extensions.zotero.inspiremeta.funding_china_only"
-        data-l10n-id="pref-funding-china-only"
-      />
+      <radiogroup
+        id="zotero-prefpane-__addonRef__-funding_filter_mode"
+        preference="extensions.zotero.inspiremeta.funding_filter_mode"
+        orient="vertical"
+      >
+        <radio data-l10n-id="pref-funding-mode-all" value="all" />
+        <radio data-l10n-id="pref-funding-mode-china" value="china" />
+        <radio data-l10n-id="pref-funding-mode-nsfc" value="nsfc" />
+        <radio data-l10n-id="pref-funding-mode-custom" value="custom" />
+      </radiogroup>
       <html:p
         class="zinspire-pref-desc"
-        data-l10n-id="pref-funding-china-only-desc"
+        data-l10n-id="pref-funding-mode-desc"
       ></html:p>
+      <!-- Custom funder list: only meaningful when "Custom list" is selected -->
+      <vbox
+        style="margin-top: 8px; margin-left: 20px; padding: 8px; background: var(--material-sidepane, rgba(0,0,0,0.03)); border-radius: 4px;"
+      >
+        <hbox align="center">
+          <label
+            data-l10n-id="pref-funding-custom-label"
+            style="font-weight: 500; margin-right: 8px;"
+          />
+          <html:input
+            type="text"
+            id="zotero-prefpane-__addonRef__-funding_filter_custom"
+            preference="extensions.zotero.inspiremeta.funding_filter_custom"
+            class="zinspire-pref-input"
+            style="flex: 1;"
+            data-l10n-id="pref-funding-custom-placeholder"
+          />
+        </hbox>
+        <html:p
+          class="zinspire-pref-desc"
+          style="margin-left: 0;"
+          data-l10n-id="pref-funding-custom-desc"
+        ></html:p>
+      </vbox>
     </vbox>
   </vbox>
 

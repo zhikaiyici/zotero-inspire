@@ -56,6 +56,9 @@ declare namespace _ZoteroTypes {
       "collab_tag_auto": boolean;
       "collab_tag_template": string;
       "funding_china_only": boolean;
+      "funding_filter_mode": string;
+      "funding_filter_custom": string;
+      "funding_pref_migrated": boolean;
       "favorite_authors": string;
       "favorite_papers": string;
       "favorite_presentations": string;

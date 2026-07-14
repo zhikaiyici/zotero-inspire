@@ -1,9 +1,9 @@
 import { extractAcknowledgmentSection } from "./acknowledgmentExtractor";
 import { extractFundingInfo } from "./fundingExtractor";
-import { FundingResult, FundingInfo } from "./types";
+import { filterFunding } from "./fundingFilter";
+import { FundingResult } from "./types";
 import { extractArxivIdFromItem } from "../apiUtils";
 import { LRUCache } from "../utils";
-import { getPref } from "../../../utils/prefs";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -48,14 +48,9 @@ export async function getFundingForItem(
   }
 
   // Apply filtering based on current preference (dynamic, not cached)
-  const chinaOnly = getPref("funding_china_only") === true;
-  const filteredFunding: FundingInfo[] = chinaOnly
-    ? cached.funding.filter((f) => f.category === "china")
-    : cached.funding;
-
   return {
     ...cached,
-    funding: filteredFunding,
+    funding: filterFunding(cached.funding),
   };
 }
 
