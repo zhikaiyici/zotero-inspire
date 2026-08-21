@@ -190,7 +190,7 @@ export class ZInspire {
             closeOnClick: true,
           });
           let unUpdated = this.toUpdate - this.counter - this.CrossRefcounter - this.CNKIcounter;
-          this.progressWindow.win.changeHeadline("Finished", PLUGIN_ICON);
+          progressWindow.win.changeHeadline("Finished", PLUGIN_ICON);
           // if (operation === "full" || operation === "noabstract") {
           //   this.progressWindow.createLine({
           //     icon: PLUGIN_ICON,
@@ -198,7 +198,7 @@ export class ZInspire {
           //     progress: 100,
           //   });
           // } else if (operation === "citations") {
-          this.progressWindow.createLine({
+          progressWindow.createLine({
             icon: unUpdated > 0 ? iconCross : PLUGIN_ICON,
             text: this.toUpdate + (this.toUpdate === 1 ? " item" : " items") + " processed.\n" +
               (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
@@ -208,8 +208,8 @@ export class ZInspire {
             progress: 100,
           });
           //}
-          this.progressWindow.show();
-          this.progressWindow.startCloseTimer(3000);
+          progressWindow.show();
+          progressWindow.startCloseTimer(3000);
           this.final_count_shown = true;
         }
       }
