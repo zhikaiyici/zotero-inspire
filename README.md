@@ -190,6 +190,10 @@ When reading a PDF in Zotero:
 
 **Supported formats**: `[1]`, `[1,2,3]`, `[1-5]`, `[Smith 2024]`, `[arXiv:2301.12345]`, superscripts
 
+On source-audited Zotero 10.0 builds, selecting an item while the References section is collapsed, or merely opening a Reader, does not inflate the References cache, parse `.zotero-ft-cache`, or schedule a whole-document native-overlay index. This includes the embedded PDF Preview that Zotero creates in the library item pane: its `renderToolbar` event is never used as a preload trigger. The cached list is materialized when the section is actually expanded or when the user clicks lookup. On a cold hover, a marker-local internal-link target can be shown directly without decompressing a large cached list. Zotero's document-level citation-overlay result is first corroborated against the cached list, because the same number may identify another chapter; this path may therefore materialize a cold cache before showing a rich INSPIRE card. If a compatible Reader supplies no native result at all, or a linked target yields no extractable text (for example, on an unsupported build, for a non-numeric marker, for a scanned target page, or when no overlay intersects the selection), the historical cached-list fallback remains available. An ambiguous native target or one that exceeds the hover time budget instead suppresses the cold hover card until the list is already in memory or the user clicks lookup. When citation text selection creates a lookup control and only an internal-link target is available, even a multi-thousand-page _Review of Particle Physics_ loads at most the linked bibliography page. Strict matching uses arXiv, DOI, or journal/volume/page plus author metadata instead of treating a repeated chapter-local number as global identity. If that shortcut is unavailable, the persisted attachment mapping and the complete established PDF parser/matcher remain the compatibility fallback; grouped multi-paper entries are retained, while the same number in separated chapter runs fails closed. Global native-overlay indexing is admitted only after a real Reader text-selection or citation interaction.
+
+When a hover delegates to the historical matcher, it restores the same small persisted attachment mapping used by click, so both interactions resolve against the same evidence. Before any list or mapping is materialized, the unambiguous six-digit lost-dash form such as `125130` is recovered as `125–130`. An ambiguous four-digit token is kept intact so a genuine high reference number such as `1234` is never split. After the first hover or click, a fully labelled chapter-reset list may use its largest printed label to refine copied `6264` to `62–64`; if any cached entry lacks a label, the larger of that printed maximum and the full list length is used so a genuine unlabeled tail number remains intact. Equal-width lost-dash endpoints retain the established span limit; unequal-width recovery is limited to a short decimal-boundary crossing such as `912` → `9–12`, preventing a genuine high label such as `725` from becoming `7–25`. The coverage statistic is reused from the matcher's existing index pass rather than running a second full-list diagnosis. A persisted PDF mapping can only raise this bound.
+
 ---
 
 ## Keyboard Shortcuts
@@ -262,17 +266,18 @@ Add this to your Zotero `engines.json` for quick INSPIRE lookups:
 
 Access via `Tools` → `Add-ons` → `INSPIRE Metadata Updater` → `Preferences`:
 
-| Setting                      | Description                                                          |
-| ---------------------------- | -------------------------------------------------------------------- |
-| **Auto-fetch for new items** | Fetch metadata automatically when adding items                       |
-| **Use INSPIRE Citekey**      | Write INSPIRE texkey to Citation Key (Zotero 8+) or Extra (Zotero 7) |
-| **Max authors**              | Number of authors shown before "et al."                              |
-| **Statistics chart**         | Show year/citation distribution chart                                |
-| **Local cache**              | Enable persistent disk cache for offline use                         |
-| **Smart Update**             | Preserve manual edits during updates                                 |
-| **Preprint Watch**           | Monitor unpublished preprints                                        |
-| **Fuzzy citation detection** | For PDFs with broken text layers                                     |
-| **Abstract LaTeX mode**      | KaTeX (full rendering, default) or Unicode                           |
+| Setting                               | Description                                                          |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| **Auto-fetch for new items**          | Fetch metadata automatically when adding items                       |
+| **Use INSPIRE Citekey**               | Write INSPIRE texkey to Citation Key (Zotero 8+) or Extra (Zotero 7) |
+| **Max authors**                       | Number of authors shown before "et al."                              |
+| **Statistics chart**                  | Show year/citation distribution chart                                |
+| **Local cache**                       | Enable persistent disk cache for offline use                         |
+| **Smart Update**                      | Preserve manual edits during updates                                 |
+| **Preprint Watch**                    | Monitor unpublished preprints                                        |
+| **Fuzzy citation detection**          | For PDFs with broken text layers                                     |
+| **Reuse Zotero 10 citation analysis** | Background reuse of completed Zotero 10.0 results; restart required  |
+| **Abstract LaTeX mode**               | KaTeX (full rendering, default) or Unicode                           |
 
 ---
 

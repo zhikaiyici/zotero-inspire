@@ -18,7 +18,11 @@ import type {
   PDFPaperInfo,
   AuthorYearReferenceMapping,
 } from "./pdfReferencesParser";
-import type { OverlayReferenceMapping } from "./readerIntegration";
+import {
+  NATIVE_OVERLAY_LIMITS,
+  type NativeOverlayMatchPackage,
+  type NativeOverlayToken,
+} from "./nativeOverlayTypes";
 import { getPref } from "../../../utils/prefs";
 import {
   SCORE,
@@ -64,6 +68,20 @@ import {
 // Alias for buildDifferentInitialsPattern (used in matchAuthorYear)
 const RE_DIFFERENT_INITIALS = buildDifferentInitialsPattern;
 
+type GenericCandidateBucket = number[] | "ambiguous";
+
+interface NativeCallContext {
+  genericIndex?: Map<string, GenericCandidateBucket>;
+  genericNativeDisabledSourceCap?: true;
+  genericQueryKeys?: Set<string>;
+}
+
+interface NativeMatchAttempt {
+  matches: MatchResult[];
+  /** True means discard every partial native result and use the old chain. */
+  fallThrough: boolean;
+}
+
 /**
  * Matches PDF citation labels to INSPIRE reference entries.
  * Handles INSPIRE label inconsistencies (missing, misaligned) gracefully.
@@ -72,10 +90,9 @@ const RE_DIFFERENT_INITIALS = buildDifferentInitialsPattern;
  */
 export class LabelMatcher {
   private entries: InspireReferenceEntry[];
+  private readonly sourceAttachmentItemID: number;
   /** Maps INSPIRE label string -> entry array indices (one-to-many) */
   private labelMap: Map<string, number[]>;
-  /** Maps 1-based position -> entry array index (for fallback) */
-  private indexMap: Map<number, number>;
 
   // ─────────────────────────────────────────────────────────────────────────────
   // FTR-REFACTOR: Pre-computed identifier indexes for O(1) lookup
@@ -90,6 +107,16 @@ export class LabelMatcher {
   private journalVolIndex: Map<string, number[]> = new Map();
   /** Maps "journal:volume:page" -> entry index (for exact journal match) */
   private journalVolPageIndex: Map<string, number> = new Map();
+  /**
+   * Complete buckets are needed only for exact native-target matching. Build
+   * them lazily so ordinary citation paths retain their existing construction
+   * and high-scale interaction costs.
+   */
+  private linkedReferenceIndexes?: {
+    arxiv: Map<string, number[]>;
+    doi: Map<string, number[]>;
+    journalVolumePage: Map<string, number[]>;
+  };
 
   // ─────────────────────────────────────────────────────────────────────────────
   // PERF-FIX-4: Pre-computed normalized values to avoid redundant normalization
@@ -101,6 +128,9 @@ export class LabelMatcher {
     arxivNorm: string | null;
     doiNorm: string | null;
     yearNum: number | null;
+    journalNorm: string | null;
+    volumeNorm: string | null;
+    pageNorm: string | null;
   }> = [];
 
   /** Cached alignment diagnosis */
@@ -122,45 +152,58 @@ export class LabelMatcher {
   private pdfMissingByLabel: Map<string, PDFPaperInfo[]> = new Map();
   /** True when INSPIRE labels contain duplicates (unreliable to trust directly) */
   private hasDuplicateLabels: boolean = false;
+  /** Largest numeric label printed by INSPIRE, computed in the index pass. */
+  private maxInspireLabel: number = 0;
+  /** Number of cached INSPIRE entries carrying any non-empty printed label. */
+  private inspireLabelAvailableCount: number = 0;
   /** FTR-PDF-ANNOTATE-AUTHOR-YEAR: Author-year PDF mapping for precise matching */
   private authorYearMapping?: AuthorYearReferenceMapping;
-  /** FTR-OVERLAY-REFS: Zotero overlay reference mapping for numeric citations */
-  private overlayMapping?: OverlayReferenceMapping;
-
-  constructor(entries: InspireReferenceEntry[]) {
-    this.entries = entries;
+  constructor(
+    entries: InspireReferenceEntry[],
+    sourceAttachmentItemID: number,
+  ) {
+    if (
+      !Number.isSafeInteger(sourceAttachmentItemID) ||
+      sourceAttachmentItemID <= 0
+    ) {
+      throw new TypeError(
+        "LabelMatcher requires a positive attachment item ID",
+      );
+    }
+    // Freeze the source ordering at matcher construction. Sidebar sorting
+    // creates new arrays today, but this shallow copy keeps a future in-place
+    // sort from redirecting attachment-scoped indices while preserving entry
+    // object identity for display-order fallback.
+    this.entries = entries.slice();
+    this.sourceAttachmentItemID = sourceAttachmentItemID;
     this.labelMap = new Map();
-    this.indexMap = new Map();
-    this.buildMaps();
     this.buildIdentifierIndexes();
   }
 
-  /**
-   * Build lookup maps from entries.
-   * FTR-PDF-ANNOTATE-MULTI-LABEL: labelMap now stores arrays of indices.
-   */
-  private buildMaps(): void {
-    this.labelMap.clear();
-    this.indexMap.clear();
-    this.hasDuplicateLabels = false;
+  getSourceAttachmentItemID(): number {
+    return this.sourceAttachmentItemID;
+  }
 
-    this.entries.forEach((entry, idx) => {
-      // Build label map from INSPIRE's label field - now supports multi-entry per label
-      if (entry.label) {
-        const normalizedLabel = entry.label.trim();
-        if (normalizedLabel) {
-          const existing = this.labelMap.get(normalizedLabel) || [];
-          existing.push(idx);
-          this.labelMap.set(normalizedLabel, existing);
-          if (existing.length > 1) {
-            this.hasDuplicateLabels = true;
-          }
-        }
-      }
+  /** Resolve a match index against the exact immutable ordering used by this matcher. */
+  getEntryAt(entryIndex: number): InspireReferenceEntry | undefined {
+    return Number.isSafeInteger(entryIndex) && entryIndex >= 0
+      ? this.entries[entryIndex]
+      : undefined;
+  }
 
-      // Build 1-based index map (PDF references are usually 1-indexed)
-      this.indexMap.set(idx + 1, idx);
-    });
+  /** Repeated INSPIRE labels are ambiguous until native text or PDF mapping disambiguates them. */
+  hasDuplicateInspireLabels(): boolean {
+    return this.hasDuplicateLabels;
+  }
+
+  /** Whether this exact printed label occurs on more than one INSPIRE entry. */
+  hasDuplicateInspireLabel(label: string): boolean {
+    return (this.labelMap.get(label.trim())?.length ?? 0) > 1;
+  }
+
+  /** Number of cached INSPIRE entries carrying this exact printed label. */
+  getInspireLabelMultiplicity(label: string): number {
+    return this.labelMap.get(label.trim())?.length ?? 0;
   }
 
   /**
@@ -173,11 +216,44 @@ export class LabelMatcher {
     this.doiIndex.clear();
     this.journalVolIndex.clear();
     this.journalVolPageIndex.clear();
+    this.linkedReferenceIndexes = undefined;
+    this.labelMap.clear();
+    this.hasDuplicateLabels = false;
+    this.maxInspireLabel = 0;
+    this.inspireLabelAvailableCount = 0;
     // PERF-FIX-4: Initialize normalizedEntries array
     this.normalizedEntries = new Array(this.entries.length);
+    // Reviews repeatedly cite the same small journal vocabulary. Normalize a
+    // journal spelling once per matcher construction instead of repeating the
+    // abbreviation table/regex path for every one of 10k+ entries.
+    const normalizedJournalCache = new Map<string, string | null>();
 
     for (let idx = 0; idx < this.entries.length; idx++) {
       const entry = this.entries[idx];
+
+      // Build the one-to-many INSPIRE label map in this same source pass.
+      // The 1-based positional fallback is `label - 1`, so it needs no
+      // separate 10k-entry Map allocation.
+      if (entry.label) {
+        const normalizedLabel = entry.label.trim();
+        if (normalizedLabel) {
+          this.inspireLabelAvailableCount++;
+          const numericLabel = Number.parseInt(normalizedLabel, 10);
+          if (
+            Number.isFinite(numericLabel) &&
+            numericLabel > this.maxInspireLabel
+          ) {
+            this.maxInspireLabel = numericLabel;
+          }
+          const existing = this.labelMap.get(normalizedLabel);
+          if (existing) {
+            existing.push(idx);
+            this.hasDuplicateLabels = true;
+          } else {
+            this.labelMap.set(normalizedLabel, [idx]);
+          }
+        }
+      }
 
       // Index by arXiv ID
       const arxiv = normalizeArxivId(entry.arxivDetails);
@@ -193,24 +269,47 @@ export class LabelMatcher {
 
       // PERF-FIX-4: Store pre-computed normalized values
       // These are reused in O(n) loops instead of calling normalize functions repeatedly
-      this.normalizedEntries[idx] = {
+      const normalizedEntry: (typeof this.normalizedEntries)[number] = {
         arxivNorm: arxiv,
         doiNorm: doi,
         yearNum: entry.year ? parseInt(entry.year, 10) : null,
+        journalNorm: null,
+        volumeNorm: null,
+        pageNorm: null,
       };
+      this.normalizedEntries[idx] = normalizedEntry;
 
       // Index by journal+volume and journal+volume+page
-      if (entry.publicationInfo) {
+      if (
+        entry.publicationInfo &&
+        typeof entry.publicationInfo === "object" &&
+        !Array.isArray(entry.publicationInfo)
+      ) {
         const pub = entry.publicationInfo;
-        const journal = normalizeJournal(pub.journal_title);
+        const journalTitle = pub.journal_title;
+        let journal: string | null = null;
+        if (typeof journalTitle === "string") {
+          if (normalizedJournalCache.has(journalTitle)) {
+            journal = normalizedJournalCache.get(journalTitle) ?? null;
+          } else {
+            journal = normalizeJournal(journalTitle);
+            normalizedJournalCache.set(journalTitle, journal);
+          }
+        }
         const volume = pub.journal_volume || pub.volume;
         const page = pub.page_start || pub.artid;
 
+        if (journal && volume != null && page != null) {
+          normalizedEntry.journalNorm = journal;
+          normalizedEntry.volumeNorm = String(volume);
+          normalizedEntry.pageNorm = String(page);
+        }
+
         if (journal && volume) {
           const jvKey = `${journal}:${volume}`;
-          const existing = this.journalVolIndex.get(jvKey) || [];
-          existing.push(idx);
-          this.journalVolIndex.set(jvKey, existing);
+          const existing = this.journalVolIndex.get(jvKey);
+          if (existing) existing.push(idx);
+          else this.journalVolIndex.set(jvKey, [idx]);
 
           if (page) {
             const jvpKey = `${journal}:${volume}:${page}`;
@@ -359,267 +458,313 @@ export class LabelMatcher {
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // FTR-OVERLAY-REFS: Zotero Overlay Reference Mapping (Numeric Citations Only)
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Set overlay reference mapping from Zotero's citation overlays.
-   * FTR-OVERLAY-REFS: Enables precise matching for numeric citations using
-   * Zotero's pre-built citation→reference relationships.
-   *
-   * IMPORTANT: This is only for NUMERIC citations ([1], [2], etc.).
-   * Author-Year citations should use matchAuthorYear() instead.
-   */
-  setOverlayMapping(mapping: OverlayReferenceMapping): void {
-    this.overlayMapping = mapping;
-    Zotero.debug(
-      `[${config.addonName}] [PDF-ANNOTATE] LabelMatcher.setOverlayMapping: ${mapping.totalMappedLabels} labels, reliable=${mapping.isReliable}`,
-    );
+  private createNativeCallContext(
+    nativePackage?: NativeOverlayMatchPackage,
+    labels: readonly string[] = [],
+  ): NativeCallContext {
+    return {
+      genericQueryKeys: nativePackage
+        ? this.collectNativeGenericKeys(nativePackage, labels)
+        : undefined,
+    };
   }
 
-  /**
-   * Check if overlay mapping has been applied and is reliable.
-   */
-  hasReliableOverlayMapping(): boolean {
-    return this.overlayMapping?.isReliable === true;
+  private releaseNativeCallContext(context: NativeCallContext): void {
+    context.genericIndex?.clear();
+    context.genericIndex = undefined;
+    context.genericNativeDisabledSourceCap = undefined;
+    context.genericQueryKeys?.clear();
+    context.genericQueryKeys = undefined;
   }
 
-  /**
-   * Try to match a numeric label using Zotero's overlay reference data.
-   * This extracts identifiers (arXiv, DOI) from the reference text and
-   * uses the pre-built identifier indexes for O(1) lookup.
-   *
-   * FTR-OVERLAY-MULTI-REF: Now returns an array of matches to support
-   * citations that contain multiple papers under one label.
-   * Example: "[1] Weinberg...; Gasser...; Nucl. Phys. B250..."
-   *
-   * @param label - Numeric label string (e.g., "1", "2")
-   * @returns Array of match results (may be empty if no matches found)
-   */
-  private tryMatchByOverlay(label: string): MatchResult[] {
-    if (!this.overlayMapping?.isReliable) return [];
-
-    const overlayRefs = this.overlayMapping.labelToReference.get(label);
-    if (!overlayRefs || overlayRefs.length === 0) return [];
+  private tryMatchByNativeOverlay(
+    label: string,
+    nativePackage: NativeOverlayMatchPackage,
+    context: NativeCallContext,
+  ): NativeMatchAttempt {
+    if (!/^\d{1,6}$/.test(label)) return { matches: [], fallThrough: false };
+    const tokens = nativePackage.tokenMap.get(label);
+    if (!tokens?.length) return { matches: [], fallThrough: false };
+    if (tokens.length > NATIVE_OVERLAY_LIMITS.maxTokensPerLabel) {
+      return { matches: [], fallThrough: true };
+    }
 
     const results: MatchResult[] = [];
     const seenIndices = new Set<number>();
-
-    // FTR-OVERLAY-MULTI-REF: Process each reference in the overlay
-    // Note: A single overlayRef.text may contain multiple papers separated by semicolons
-    // Example: "[1] Weinberg, Physica A 96, 327; Gasser, Ann. Phys. 158, 142; Nucl. Phys. B250, 465"
-    for (const overlayRef of overlayRefs) {
-      if (!overlayRef?.text) continue;
-
-      const refText = overlayRef.text;
-
-      // FTR-OVERLAY-MULTI-REF: Split by semicolons to handle multiple papers in one reference
-      // But also try the full text in case semicolons are part of author names
-      const textSegments = refText
-        .split(/;\s*/)
-        .filter((s) => s.trim().length > 10);
-      // If splitting produced nothing useful, use the full text
-      if (textSegments.length === 0) {
-        textSegments.push(refText);
+    for (const token of tokens) {
+      if (!this.isBoundedNativeToken(token)) {
+        return { matches: [], fallThrough: true };
+      }
+      if (token.arxiv) {
+        const idx = this.arxivIndex.get(token.arxiv);
+        if (idx !== undefined && !seenIndices.has(idx)) {
+          seenIndices.add(idx);
+          results.push(this.makeNativeMatch(label, idx, "arxiv", token.arxiv));
+          continue;
+        }
+      }
+      if (token.doi) {
+        const idx = this.doiIndex.get(token.doi);
+        if (idx !== undefined && !seenIndices.has(idx)) {
+          seenIndices.add(idx);
+          results.push(this.makeNativeMatch(label, idx, "doi", token.doi));
+          continue;
+        }
       }
 
-      Zotero.debug(
-        `[${config.addonName}] [OVERLAY-REFS] Processing label [${label}]: ${textSegments.length} text segment(s) from "${refText.substring(0, 100)}..."`,
-      );
-
-      // Process each text segment (may be a single paper or multiple)
-      for (const segment of textSegments) {
-        // FTR-OVERLAY-ERRATUM: Detect and skip erratum segments
-        // Erratum citations are abbreviated references to the same paper, not separate papers
-        // Examples:
-        // - "B602, 641(E) (2001)" - erratum for Nucl. Phys. B paper
-        // - "Erratum: ibid. 602, 641 (2001)"
-        // - "89, 019903(E) (2014)"
-        //
-        // Patterns:
-        // 1. Contains "(E)" - explicit erratum marker
-        // 2. Contains "Erratum" or "erratum"
-        // 3. Starts with just volume number without journal name (e.g., "B602" or "89,")
-        const isErratum =
-          /\(E\)/.test(segment) ||
-          /\berratum\b/i.test(segment) ||
-          /^\s*[A-Z]?\d+\s*,/.test(segment); // Starts with optional letter + number + comma
-
-        if (isErratum) {
-          Zotero.debug(
-            `[${config.addonName}] [OVERLAY-REFS] Skipping erratum segment: "${segment.substring(0, 50)}..."`,
+      let journalMatched = false;
+      if (token.exactJournalKey) {
+        const idx = this.journalVolPageIndex.get(token.exactJournalKey);
+        if (idx !== undefined && !seenIndices.has(idx)) {
+          seenIndices.add(idx);
+          results.push(
+            this.makeNativeMatch(label, idx, "journal", token.exactJournalKey),
           );
-          continue; // Skip erratum segments - they're part of the previous paper
+          journalMatched = true;
         }
-
-        // Try to extract arXiv ID from this segment
-        // Common patterns: arXiv:XXXX.XXXXX, arXiv:hep-th/XXXXXXX
-        const arxivMatch = segment.match(/arXiv[:\s]*([\d.]+|[a-z-]+\/\d+)/i);
-        if (arxivMatch) {
-          const normalized = normalizeArxivId(arxivMatch[1]);
-          if (normalized) {
-            const idx = this.arxivIndex.get(normalized);
-            if (idx !== undefined && !seenIndices.has(idx)) {
+      }
+      if (!journalMatched && token.genericJournal) {
+        const candidates = this.getGenericCandidates(token, context);
+        if (candidates === "ambiguous") {
+          return { matches: [], fallThrough: true };
+        }
+        for (const idx of candidates) {
+          if (seenIndices.has(idx)) continue;
+          try {
+            const pub = this.entries[idx]?.publicationInfo;
+            if (!pub) continue;
+            const entryVol = primitiveMetadataString(
+              pub.journal_volume || pub.volume,
+            );
+            const entryPage = primitiveMetadataString(
+              pub.page_start || pub.artid,
+            );
+            if (
+              entryVol !== token.genericJournal.volume ||
+              entryPage !== token.genericJournal.page
+            ) {
+              continue;
+            }
+            const journal = pub.journal_title as unknown;
+            if (
+              typeof journal !== "string" ||
+              journal.length > NATIVE_OVERLAY_LIMITS.maxJournalUnits
+            ) {
+              return { matches: [], fallThrough: true };
+            }
+            if (journalsSimilar(token.genericJournal.journal, journal)) {
               seenIndices.add(idx);
-              Zotero.debug(
-                `[${config.addonName}] [OVERLAY-REFS] Matched label [${label}] via arXiv ${normalized}`,
+              results.push(
+                this.makeNativeMatch(
+                  label,
+                  idx,
+                  "journal",
+                  `${journal} ${token.genericJournal.volume}, ${token.genericJournal.page}`,
+                ),
               );
-              results.push({
-                pdfLabel: label,
-                entryIndex: idx,
-                entryId: this.entries[idx]?.id,
-                confidence: "high",
-                matchMethod: "overlay",
-                matchedIdentifier: { type: "arxiv", value: normalized },
-              });
-              continue; // Move to next segment
+              break;
             }
-          }
-        }
-
-        // Try to extract DOI from this segment
-        // Common pattern: 10.XXXX/...
-        const doiMatch = segment.match(/\b(10\.\d{4,}\/[^\s,;]+)/);
-        if (doiMatch) {
-          const normalized = normalizeDoi(doiMatch[1]);
-          if (normalized) {
-            const idx = this.doiIndex.get(normalized);
-            if (idx !== undefined && !seenIndices.has(idx)) {
-              seenIndices.add(idx);
-              Zotero.debug(
-                `[${config.addonName}] [OVERLAY-REFS] Matched label [${label}] via DOI ${normalized}`,
-              );
-              results.push({
-                pdfLabel: label,
-                entryIndex: idx,
-                entryId: this.entries[idx]?.id,
-                confidence: "high",
-                matchMethod: "overlay",
-                matchedIdentifier: { type: "doi", value: normalized },
-              });
-              continue; // Move to next segment
-            }
-          }
-        }
-
-        // Try journal+volume+page matching
-        // FTR-OVERLAY-REFS-FIX: Use flexible journal matching with journalsSimilar()
-        //
-        // Common patterns in reference text:
-        // - "Physica A (Amsterdam) 96, 327 (1979)"
-        // - "Ann. Phys. (N.Y.) 158, 142 (1984)"
-        // - "Phys. Rev. D 96, 054001 (2017)"
-        // - "JHEP 05, 123 (2020)"
-        // - "Nucl. Phys. B250, 465 (1985)" - note: volume may be attached to journal name
-
-        // Step 1: Try the original specific patterns first (high precision)
-        // FTR-OVERLAY-PAGE-SUFFIX: Support alphanumeric page/artid numbers:
-        // - "96C" (conference proceedings like Nucl. Phys. A)
-        // - "123C01" (PTEP style artid)
-        // - "054001" (standard Physical Review artid)
-        let journalMatched = false;
-        const journalMatch = segment.match(
-          /(?:Phys\.?\s*Rev\.?|Nucl\.?\s*Phys\.?|JHEP|JCAP|Eur\.?\s*Phys\.?\s*J\.?|Class\.?\s*Quantum\s*Grav\.?|Phys\.?\s*Lett\.?)[^\d]*(\d+)[^\d]*(\d+[A-Za-z]?\d*)/i,
-        );
-        if (journalMatch) {
-          const journal = normalizeJournal(
-            journalMatch[0].split(/\d/)[0].trim(),
-          );
-          const volume = journalMatch[1];
-          const page = journalMatch[2];
-
-          if (journal && volume && page) {
-            const key = `${journal}:${volume}:${page}`;
-            const idx = this.journalVolPageIndex.get(key);
-            if (idx !== undefined && !seenIndices.has(idx)) {
-              seenIndices.add(idx);
-              Zotero.debug(
-                `[${config.addonName}] [OVERLAY-REFS] Matched label [${label}] via journal ${journal}:${volume}:${page}`,
-              );
-              results.push({
-                pdfLabel: label,
-                entryIndex: idx,
-                entryId: this.entries[idx]?.id,
-                confidence: "high",
-                matchMethod: "overlay",
-                matchedIdentifier: {
-                  type: "journal",
-                  value: `${journal} ${volume}, ${page}`,
-                },
-              });
-              journalMatched = true;
-            }
-          }
-        }
-
-        // Step 2: Fallback to flexible journal matching using journalsSimilar()
-        // Extract generic patterns: "JournalName Volume, Page" or "JournalName Volume (Year) Page"
-        // FTR-OVERLAY-PAGE-SUFFIX: Support alphanumeric artid like "96C", "123C01"
-        if (!journalMatched) {
-          const genericJournalMatch = segment.match(
-            /([A-Za-z][A-Za-z.\s()]+?)\s+(\d+)\s*[,:(\s]\s*(\d+[A-Za-z]?\d*)/,
-          );
-          if (genericJournalMatch) {
-            const possibleJournal = genericJournalMatch[1].trim();
-            const volume = genericJournalMatch[2];
-            const page = genericJournalMatch[3];
-
-            // Search entries with matching volume and page, verify journal with journalsSimilar()
-            for (let i = 0; i < this.entries.length; i++) {
-              if (seenIndices.has(i)) continue;
-
-              const entry = this.entries[i];
-              if (!entry.publicationInfo) continue;
-
-              const pub = entry.publicationInfo;
-              const entryVol = pub.journal_volume || pub.volume;
-              const entryPage = pub.page_start || pub.artid;
-
-              if (
-                entryVol &&
-                String(entryVol) === volume &&
-                entryPage &&
-                String(entryPage) === page
-              ) {
-                // Volume and page match, now check journal name similarity
-                if (journalsSimilar(possibleJournal, pub.journal_title)) {
-                  seenIndices.add(i);
-                  Zotero.debug(
-                    `[${config.addonName}] [OVERLAY-REFS] Matched label [${label}] via flexible journal: "${possibleJournal}" ~ "${pub.journal_title}", vol=${volume}, page=${page}`,
-                  );
-                  results.push({
-                    pdfLabel: label,
-                    entryIndex: i,
-                    entryId: entry.id,
-                    confidence: "high",
-                    matchMethod: "overlay",
-                    matchedIdentifier: {
-                      type: "journal",
-                      value: `${pub.journal_title} ${volume}, ${page}`,
-                    },
-                  });
-                  break; // Found match for this segment, move to next
-                }
-              }
-            }
+          } catch {
+            return { matches: [], fallThrough: true };
           }
         }
       }
     }
 
     if (results.length > 0) {
-      // FTR-OVERLAY-ERRATUM: Clear any stale "missing" entries for this label
-      // The overlay matching correctly handles erratum segments, so the earlier
-      // PDF mapping's "missing" data may be incorrect (e.g., reporting erratum as missing)
       this.pdfMissingByLabel.delete(label);
-
-      Zotero.debug(
-        `[${config.addonName}] [OVERLAY-REFS] Label [${label}]: matched ${results.length} of ${overlayRefs.length} references`,
-      );
     }
+    return { matches: results, fallThrough: false };
+  }
 
-    return results;
+  private makeNativeMatch(
+    label: string,
+    idx: number,
+    type: "arxiv" | "doi" | "journal",
+    value: string,
+  ): MatchResult {
+    return {
+      pdfLabel: label,
+      entryIndex: idx,
+      entryId: this.entries[idx]?.id,
+      confidence: "high",
+      matchMethod: "overlay",
+      matchedIdentifier: { type, value },
+    };
+  }
+
+  private isBoundedNativeToken(token: NativeOverlayToken): boolean {
+    if (!token || typeof token !== "object") return false;
+    if (
+      token.arxiv !== undefined &&
+      (typeof token.arxiv !== "string" ||
+        token.arxiv.length > NATIVE_OVERLAY_LIMITS.maxIdentifierUnits)
+    ) {
+      return false;
+    }
+    if (
+      token.doi !== undefined &&
+      (typeof token.doi !== "string" ||
+        token.doi.length > NATIVE_OVERLAY_LIMITS.maxIdentifierUnits)
+    ) {
+      return false;
+    }
+    if (
+      token.exactJournalKey !== undefined &&
+      (typeof token.exactJournalKey !== "string" ||
+        token.exactJournalKey.length >
+          NATIVE_OVERLAY_LIMITS.maxJournalUnits +
+            2 * NATIVE_OVERLAY_LIMITS.maxVolumePageUnits +
+            2)
+    ) {
+      return false;
+    }
+    const generic = token.genericJournal;
+    return (
+      generic === undefined ||
+      (!!generic &&
+        typeof generic === "object" &&
+        typeof generic.journal === "string" &&
+        generic.journal.length > 0 &&
+        generic.journal.length <= NATIVE_OVERLAY_LIMITS.maxJournalUnits &&
+        typeof generic.volume === "string" &&
+        /^\d+$/.test(generic.volume) &&
+        generic.volume.length <= NATIVE_OVERLAY_LIMITS.maxVolumePageUnits &&
+        typeof generic.page === "string" &&
+        /^\d+[A-Za-z]?\d*$/.test(generic.page) &&
+        generic.page.length <= NATIVE_OVERLAY_LIMITS.maxVolumePageUnits)
+    );
+  }
+
+  private getGenericCandidates(
+    token: NativeOverlayToken,
+    context: NativeCallContext,
+  ): readonly number[] | "ambiguous" {
+    if (!context.genericIndex && !context.genericNativeDisabledSourceCap) {
+      if (this.entries.length > NATIVE_OVERLAY_LIMITS.maxMatcherSourceEntries) {
+        context.genericNativeDisabledSourceCap = true;
+      } else {
+        context.genericIndex = this.buildGenericCallIndex(
+          context.genericQueryKeys || new Set(),
+        );
+      }
+    }
+    if (context.genericNativeDisabledSourceCap || !context.genericIndex) {
+      return "ambiguous";
+    }
+    const generic = token.genericJournal!;
+    return context.genericIndex.get(`${generic.volume}:${generic.page}`) || [];
+  }
+
+  private buildGenericCallIndex(
+    queryKeys: ReadonlySet<string>,
+  ): Map<string, GenericCandidateBucket> {
+    const index = new Map<string, GenericCandidateBucket>();
+    if (queryKeys.size === 0) return index;
+    const singleQueryKey =
+      queryKeys.size === 1 ? queryKeys.values().next().value : undefined;
+    const singleSeparator = singleQueryKey?.indexOf(":") ?? -1;
+    const singleVolume =
+      singleSeparator >= 0
+        ? singleQueryKey!.slice(0, singleSeparator)
+        : undefined;
+    const singlePage =
+      singleSeparator >= 0
+        ? singleQueryKey!.slice(singleSeparator + 1)
+        : undefined;
+    const queriedPagesByVolume = new Map<string, Set<string>>();
+    if (queryKeys.size > 1) {
+      for (const key of queryKeys) {
+        const separator = key.indexOf(":");
+        const volume = key.slice(0, separator);
+        const page = key.slice(separator + 1);
+        const pages = queriedPagesByVolume.get(volume) || new Set<string>();
+        pages.add(page);
+        queriedPagesByVolume.set(volume, pages);
+      }
+    }
+    for (let i = 0; i < this.entries.length; i++) {
+      try {
+        const entry = this.entries[i];
+        // Entries are our already-decoded INSPIRE cache objects (and were
+        // accessed while constructing the ordinary indexes), not objects from
+        // the Reader compartment. Keep this hot 10k-row scan to a normal
+        // property read; the surrounding guard still contains malformed data.
+        const pub = entry.publicationInfo;
+        if (!pub || typeof pub !== "object" || Array.isArray(pub)) continue;
+        const entryVol = pub.journal_volume || pub.volume;
+        const entryPage = pub.page_start || pub.artid;
+        if (!entryVol || !entryPage) continue;
+        const volume = primitiveMetadataString(entryVol);
+        const page = primitiveMetadataString(entryPage);
+        if (volume === undefined || page === undefined) continue;
+        // Query keys have already passed the bounded numeric validation in
+        // collectNativeGenericKeys(). Reject non-target source rows before any
+        // regex work: a 10k-entry review normally has only one matching
+        // volume/page pair, so this keeps the interaction scan inexpensive.
+        let key: string;
+        if (singleQueryKey !== undefined) {
+          if (volume !== singleVolume || page !== singlePage) continue;
+          key = singleQueryKey;
+        } else {
+          const queriedPages = queriedPagesByVolume.get(volume);
+          if (!queriedPages?.has(page)) continue;
+          key = `${volume}:${page}`;
+        }
+        const journal = pub.journal_title as unknown;
+        if (!journal) continue;
+        if (
+          typeof journal !== "string" ||
+          journal.length > NATIVE_OVERLAY_LIMITS.maxJournalUnits
+        ) {
+          index.set(key, "ambiguous");
+          continue;
+        }
+        if (index.get(key) === "ambiguous") continue;
+        const candidates = index.get(key);
+        if (!candidates) {
+          index.set(key, [i]);
+        } else if (
+          Array.isArray(candidates) &&
+          candidates.length >= NATIVE_OVERLAY_LIMITS.maxGenericCandidates
+        ) {
+          index.set(key, "ambiguous");
+        } else if (Array.isArray(candidates)) {
+          candidates.push(i);
+        }
+      } catch {
+        // Unreachable or throwing metadata cannot contribute a bounded key.
+      }
+    }
+    return index;
+  }
+
+  private collectNativeGenericKeys(
+    nativePackage: NativeOverlayMatchPackage,
+    labels: readonly string[],
+  ): Set<string> {
+    const keys = new Set<string>();
+    for (const label of labels) {
+      const tokens = nativePackage.tokenMap.get(label.trim());
+      if (!tokens || tokens.length > NATIVE_OVERLAY_LIMITS.maxTokensPerLabel) {
+        continue;
+      }
+      for (const token of tokens) {
+        const generic = token?.genericJournal;
+        if (
+          !generic ||
+          typeof generic.volume !== "string" ||
+          typeof generic.page !== "string" ||
+          generic.volume.length > NATIVE_OVERLAY_LIMITS.maxVolumePageUnits ||
+          generic.page.length > NATIVE_OVERLAY_LIMITS.maxVolumePageUnits ||
+          !/^\d+$/.test(generic.volume) ||
+          !/^\d+[A-Za-z]?\d*$/.test(generic.page)
+        )
+          continue;
+        keys.add(`${generic.volume}:${generic.page}`);
+      }
+    }
+    return keys;
   }
 
   /**
@@ -1091,19 +1236,273 @@ export class LabelMatcher {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
+   * Match metadata extracted from a single Zotero-native PDF link target.
+   * Numeric labels and list positions are intentionally excluded: chapter-local
+   * labels such as RPP's repeated [27] are not globally identifying evidence.
+   */
+  matchLinkedReference(
+    pdfLabel: string,
+    paperInfos: readonly PDFPaperInfo[],
+  ): MatchResult[] {
+    const label = pdfLabel.trim();
+    if (!/^[1-9]\d{0,5}$/.test(label) || paperInfos.length === 0) return [];
+    const indexes = this.getLinkedReferenceIndexes();
+    const results: MatchResult[] = [];
+    const usedEntries = new Set<number>();
+    const eligibleSourcePapers = new Set<number>();
+    const matchedSourcePapers = new Set<number>();
+
+    for (
+      let sourcePaperIndex = 0;
+      sourcePaperIndex < paperInfos.length;
+      sourcePaperIndex++
+    ) {
+      const paper = paperInfos[sourcePaperIndex];
+      if (!paper || paper.isErratum) continue;
+      eligibleSourcePapers.add(sourcePaperIndex);
+      const candidateIndices = new Set<number>();
+      const arxiv = normalizeArxivId(paper.arxivId);
+      const doi = normalizeDoi(paper.doi);
+      if (arxiv) {
+        for (const idx of indexes.arxiv.get(arxiv) || []) {
+          candidateIndices.add(idx);
+        }
+      }
+      if (doi) {
+        for (const idx of indexes.doi.get(doi) || []) {
+          candidateIndices.add(idx);
+        }
+      }
+      if (paper.journalAbbrev && paper.volume && paper.pageStart) {
+        const journal = normalizeJournal(paper.journalAbbrev);
+        if (journal) {
+          const key = `${journal}:${paper.volume}:${paper.pageStart}`;
+          for (const idx of indexes.journalVolumePage.get(key) || []) {
+            candidateIndices.add(idx);
+          }
+        }
+      }
+
+      const strong: Array<{
+        idx: number;
+        kind: "arxiv" | "doi" | "journal";
+        score: number;
+      }> = [];
+      for (const idx of candidateIndices) {
+        const match = getStrongMatchKind(paper, this.entries[idx]);
+        if (match) strong.push({ idx, ...match });
+      }
+      if (strong.length === 0) continue;
+      // Exact identifiers from one target record must not disagree. Choosing
+      // arXiv over a conflicting DOI/journal candidate would turn corrupt or
+      // duplicated metadata into a confident override.
+      if (new Set(strong.map((candidate) => candidate.idx)).size !== 1) {
+        continue;
+      }
+      strong.sort((a, b) => {
+        const priority = (kind: "arxiv" | "doi" | "journal") =>
+          kind === "arxiv" ? 3 : kind === "doi" ? 2 : 1;
+        return priority(b.kind) - priority(a.kind) || b.score - a.score;
+      });
+      const best = strong[0];
+      if (usedEntries.has(best.idx)) continue;
+      usedEntries.add(best.idx);
+      matchedSourcePapers.add(sourcePaperIndex);
+      const entry = this.entries[best.idx];
+      let value = "";
+      if (best.kind === "arxiv") value = arxiv || "";
+      else if (best.kind === "doi") value = doi || "";
+      else {
+        const pub = entry.publicationInfo;
+        value = pub
+          ? `${pub.journal_title || ""} ${pub.journal_volume || pub.volume || ""}, ${pub.page_start || pub.artid || ""}`.trim()
+          : "";
+      }
+      results.push({
+        pdfLabel: label,
+        entryIndex: best.idx,
+        entryId: entry.id,
+        confidence: "high",
+        matchMethod: "overlay",
+        matchedIdentifier: { type: best.kind, value },
+        score: best.score,
+        sourcePaperIndex,
+      });
+    }
+    // A target record can contain multiple papers under one numeric label.
+    // Never suppress the established one-to-many fallback with a partial
+    // strict result; the native override is accepted only with full coverage.
+    return eligibleSourcePapers.size > 0 &&
+      matchedSourcePapers.size === eligibleSourcePapers.size
+      ? results
+      : [];
+  }
+
+  /**
+   * Preserve the historical one-to-many result for an ordinary grouped
+   * bibliography item. A small run of equal labels at adjacent canonical
+   * indices represents one printed marker containing several papers. The same
+   * label in separated runs is chapter-local numbering and must fail closed.
+   */
+  matchContiguousDuplicateLabel(pdfLabel: string): MatchResult[] {
+    const label = pdfLabel.trim();
+    const indices = this.labelMap.get(label);
+    if (
+      !indices ||
+      indices.length < 2 ||
+      indices.length > NATIVE_OVERLAY_LIMITS.maxLinkedReferencesPerCitation
+    ) {
+      return [];
+    }
+    for (let i = 1; i < indices.length; i++) {
+      if (indices[i] !== indices[i - 1] + 1) return [];
+    }
+    return indices.map((entryIndex) => ({
+      pdfLabel: label,
+      entryIndex,
+      entryId: this.entries[entryIndex]?.id,
+      confidence: "high",
+      matchMethod: "exact",
+    }));
+  }
+
+  /**
+   * Admit an established PDF mapping for a repeated numeric label only when
+   * its per-paper metadata uniquely covers every INSPIRE entry carrying that
+   * label. This preserves grouped multi-paper citations (including a paper
+   * absent from INSPIRE) while rejecting count-only mappings and chapter-local
+   * numbering where one globally parsed [n] cannot identify the clicked one.
+   */
+  matchResolvedPDFDuplicateLabel(pdfLabel: string): MatchResult[] {
+    const label = pdfLabel.trim();
+    const contiguousMatches = this.matchContiguousDuplicateLabel(label);
+    if (!this.pdfLabelMap?.has(label) || contiguousMatches.length < 2) {
+      return [];
+    }
+    const duplicateIndices = contiguousMatches.map((match) => match.entryIndex);
+    const paperInfos = this.pdfPaperInfos?.get(label);
+    if (!paperInfos?.length) return [];
+
+    const duplicateIndexSet = new Set(duplicateIndices);
+    const byEntryIndex = new Map<number, MatchResult>();
+    for (let paperIndex = 0; paperIndex < paperInfos.length; paperIndex++) {
+      const paperInfo = paperInfos[paperIndex];
+      if (!paperInfo || paperInfo.isErratum) continue;
+      const matches = this.matchLinkedReference(label, [paperInfo]);
+      if (matches.length !== 1) continue;
+      const match = matches[0];
+      if (duplicateIndexSet.has(match.entryIndex)) {
+        // Two parsed source papers claiming the same INSPIRE entry makes the
+        // per-paper attribution non-unique. Reject the precise mapping rather
+        // than letting the later paper silently overwrite sourcePaperIndex.
+        if (byEntryIndex.has(match.entryIndex)) return [];
+        // `matchLinkedReference(label, [paperInfo])` necessarily reports its
+        // one-element source array as index 0. Preserve the paper's truthful
+        // position in the complete grouped PDF record for downstream callers.
+        byEntryIndex.set(match.entryIndex, {
+          ...match,
+          sourcePaperIndex: paperIndex,
+        });
+      }
+    }
+
+    if (
+      byEntryIndex.size !== duplicateIndices.length ||
+      duplicateIndices.some((index) => !byEntryIndex.has(index))
+    ) {
+      return [];
+    }
+    return duplicateIndices.map((index) => byEntryIndex.get(index)!);
+  }
+
+  private getLinkedReferenceIndexes(): NonNullable<
+    LabelMatcher["linkedReferenceIndexes"]
+  > {
+    if (this.linkedReferenceIndexes) return this.linkedReferenceIndexes;
+    const indexes: NonNullable<LabelMatcher["linkedReferenceIndexes"]> = {
+      arxiv: new Map(),
+      doi: new Map(),
+      journalVolumePage: new Map(),
+    };
+    const add = (map: Map<string, number[]>, key: string, idx: number) => {
+      const bucket = map.get(key);
+      if (bucket) bucket.push(idx);
+      else map.set(key, [idx]);
+    };
+    for (let idx = 0; idx < this.entries.length; idx++) {
+      const normalized = this.normalizedEntries[idx];
+      if (normalized?.arxivNorm) {
+        add(indexes.arxiv, normalized.arxivNorm, idx);
+      }
+      if (normalized?.doiNorm) {
+        add(indexes.doi, normalized.doiNorm, idx);
+      }
+      const journal = normalized?.journalNorm;
+      const volume = normalized?.volumeNorm;
+      const page = normalized?.pageNorm;
+      if (journal && volume && page) {
+        add(
+          indexes.journalVolumePage,
+          `${journal}:${String(volume)}:${String(page)}`,
+          idx,
+        );
+      }
+    }
+    this.linkedReferenceIndexes = indexes;
+    return indexes;
+  }
+
+  /**
    * Match a PDF label to entries.
    * FTR-PDF-ANNOTATE-MULTI-LABEL: Now returns array of matches (empty if no match).
    * Tries multiple strategies: PDF mapping, INSPIRE label, index-based, fuzzy.
    */
-  match(pdfLabel: string): MatchResult[] {
+  match(
+    pdfLabel: string,
+    nativePackage?: NativeOverlayMatchPackage,
+  ): MatchResult[] {
+    const boundedPackage = this.isReliableNativePackage(nativePackage)
+      ? nativePackage
+      : undefined;
+    const context = this.createNativeCallContext(boundedPackage, [pdfLabel]);
+    try {
+      return this.matchInternal(pdfLabel, boundedPackage, context);
+    } finally {
+      this.releaseNativeCallContext(context);
+    }
+  }
+
+  private matchInternal(
+    pdfLabel: string,
+    nativePackage: NativeOverlayMatchPackage | undefined,
+    nativeContext: NativeCallContext,
+  ): MatchResult[] {
     const normalizedLabel = pdfLabel.trim();
+    if (nativePackage) {
+      const nativeAttempt = this.tryMatchByNativeOverlay(
+        normalizedLabel,
+        nativePackage,
+        nativeContext,
+      );
+      if (!nativeAttempt.fallThrough && nativeAttempt.matches.length > 0) {
+        return nativeAttempt.matches;
+      }
+    }
     const results: MatchResult[] = [];
     const alignment = this.diagnoseAlignment();
     const paperInfosRaw = this.pdfPaperInfos?.get(normalizedLabel);
     const nonErrataInfos = paperInfosRaw?.filter((p) => !p.isErratum) ?? [];
     const paperInfos =
       nonErrataInfos.length > 0 ? nonErrataInfos : paperInfosRaw;
-    const expectedCount = paperInfos ? paperInfos.length : 0;
+    // A count-only positional mapping remains useful when INSPIRE provides no
+    // occurrence of this printed label (the established misalignment
+    // fallback). It must never multiply a label that INSPIRE already identifies
+    // uniquely, nor disambiguate a repeated chapter-local number.
+    const mappedExpectedCount =
+      this.getInspireLabelMultiplicity(normalizedLabel) === 0
+        ? (this.pdfLabelMap?.get(normalizedLabel)?.length ?? 0)
+        : 0;
+    const expectedCount = paperInfos ? paperInfos.length : mappedExpectedCount;
     const overParsedActive =
       this.pdfOverParsed && this.pdfOverParsedRatio > 1.05;
 
@@ -1113,21 +1512,17 @@ export class LabelMatcher {
     // FTR-NO-LABELS-FIX: Calculate noLabelsInInspire early so we can use it throughout the function
     const maxInspireLabel = this.getMaxInspireLabel();
     const noLabelsInInspire = maxInspireLabel === 0;
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // FTR-OVERLAY-REFS: Try overlay matching first for numeric labels
-    // Zotero's overlay provides the most accurate citation→reference mapping
-    // This is only used for numeric citations - Author-Year uses matchAuthorYear()
-    // FTR-OVERLAY-MULTI-REF: Now returns array to support multiple papers per label
-    // ─────────────────────────────────────────────────────────────────────────────
-    if (this.hasReliableOverlayMapping()) {
-      const overlayMatches = this.tryMatchByOverlay(normalizedLabel);
-      if (overlayMatches.length > 0) {
-        // Overlay matches found - return immediately as this is the most reliable source
-        // FTR-OVERLAY-MULTI-REF: Returns all matched papers under this label
-        return overlayMatches;
-      }
-    }
+    // A partially labelled INSPIRE payload can have a long unlabeled tail.
+    // In that case the largest printed label is not a safe version-mismatch
+    // boundary: label N can still identify canonical entry N even when only an
+    // earlier prefix carries explicit labels. Keep the old printed-label bound
+    // for fully labelled/chapter-reset lists, but use cardinality for sparse
+    // payloads so the established positional fallback remains reachable.
+    const maxNumericLabelBound =
+      alignment.totalEntries > 0 &&
+      (alignment.labelAvailableCount ?? 0) < alignment.totalEntries
+        ? Math.max(maxInspireLabel, alignment.totalEntries)
+        : maxInspireLabel;
 
     const preferPdfMapping =
       this.pdfLabelMap &&
@@ -1186,10 +1581,10 @@ export class LabelMatcher {
     if (
       !isNaN(numLabelForDiag) &&
       !noLabelsInInspire &&
-      numLabelForDiag > maxInspireLabel
+      numLabelForDiag > maxNumericLabelBound
     ) {
       Zotero.debug(
-        `[${config.addonName}] [PDF-ANNOTATE] [VERSION-MISMATCH] Label [${normalizedLabel}] exceeds INSPIRE max ${maxInspireLabel}. ` +
+        `[${config.addonName}] [PDF-ANNOTATE] [VERSION-MISMATCH] Label [${normalizedLabel}] exceeds safe INSPIRE bound ${maxNumericLabelBound}. ` +
           `paperInfos=${paperInfos ? `${paperInfos.length} paper(s)` : "NONE"}. ` +
           `arXiv=${paperInfos?.[0]?.arxivId || "N/A"}, DOI=${paperInfos?.[0]?.doi || "N/A"}`,
       );
@@ -1336,19 +1731,16 @@ export class LabelMatcher {
       // NOTE: If maxInspireLabel is 0, it means INSPIRE has no labels at all, not a version mismatch
       if (!trustInspireLabels && results.length === 0) {
         const numLabel = parseInt(normalizedLabel, 10);
-        const maxInspireLabel = this.getMaxInspireLabel();
-        const noLabelsInInspire = maxInspireLabel === 0;
-
         // Version mismatch: PDF has more refs than INSPIRE - try global identifier search
         // Don't treat "no labels in INSPIRE" as version mismatch - fall through to index fallback
         if (
           !noLabelsInInspire &&
           !isNaN(numLabel) &&
-          numLabel > maxInspireLabel &&
+          numLabel > maxNumericLabelBound &&
           paperInfos?.length
         ) {
           Zotero.debug(
-            `[${config.addonName}] [PDF-ANNOTATE] [VERSION-MISMATCH-SEARCH] Label [${normalizedLabel}] exceeds max ${maxInspireLabel}, trying global arXiv/DOI search`,
+            `[${config.addonName}] [PDF-ANNOTATE] [VERSION-MISMATCH-SEARCH] Label [${normalizedLabel}] exceeds safe bound ${maxNumericLabelBound}, trying global arXiv/DOI search`,
           );
 
           for (const pdfPaper of paperInfos) {
@@ -1381,7 +1773,7 @@ export class LabelMatcher {
                   matchMethod: "exact",
                   // FTR-PDF-MATCHING: Enhanced diagnostic info
                   matchedIdentifier: { type: "arxiv", value: pdfArxivNorm },
-                  versionMismatchWarning: `PDF label [${pdfLabel}] exceeds INSPIRE max label ${maxInspireLabel}. Matched via arXiv ID.`,
+                  versionMismatchWarning: `PDF label [${pdfLabel}] exceeds INSPIRE safe label bound ${maxNumericLabelBound}. Matched via arXiv ID.`,
                 });
                 Zotero.debug(
                   `[${config.addonName}] [PDF-ANNOTATE] [VERSION-MISMATCH-SEARCH] arXiv match: [${pdfLabel}] -> idx ${i} (INSPIRE label ${entry.label}) via arXiv:${pdfArxivNorm}`,
@@ -1399,7 +1791,7 @@ export class LabelMatcher {
                   matchMethod: "exact",
                   // FTR-PDF-MATCHING: Enhanced diagnostic info
                   matchedIdentifier: { type: "doi", value: pdfDoiNorm },
-                  versionMismatchWarning: `PDF label [${pdfLabel}] exceeds INSPIRE max label ${maxInspireLabel}. Matched via DOI.`,
+                  versionMismatchWarning: `PDF label [${pdfLabel}] exceeds INSPIRE safe label bound ${maxNumericLabelBound}. Matched via DOI.`,
                 });
                 Zotero.debug(
                   `[${config.addonName}] [PDF-ANNOTATE] [VERSION-MISMATCH-SEARCH] DOI match: [${pdfLabel}] -> idx ${i} (INSPIRE label ${entry.label}) via doi:${pdfDoiNorm}`,
@@ -1632,8 +2024,7 @@ export class LabelMatcher {
         // Calculate score for the matched entry
         const matchedPaper = paperInfos.find(
           (p) =>
-            (directMatch.arxivOk && p.arxivId) ||
-            (directMatch.doiOk && p.doi),
+            (directMatch.arxivOk && p.arxivId) || (directMatch.doiOk && p.doi),
         );
         if (matchedPaper) {
           chosenScore = this.calculateMatchScore(
@@ -1698,10 +2089,7 @@ export class LabelMatcher {
         }
 
         // Selection priority: year-matched > highest score (arXiv/DOI already handled by index lookup)
-        if (
-          bestYearOk &&
-          (!bestAny || bestYearOk.score >= bestAny.score - 1)
-        ) {
+        if (bestYearOk && (!bestAny || bestYearOk.score >= bestAny.score - 1)) {
           chosenIdx = bestYearOk.idx;
           chosenScore = bestYearOk.score;
           chosenYearOk = true;
@@ -1903,8 +2291,7 @@ export class LabelMatcher {
         // Calculate score for the matched entry
         const matchedPaper = paperInfos.find(
           (p) =>
-            (directMatch.arxivOk && p.arxivId) ||
-            (directMatch.doiOk && p.doi),
+            (directMatch.arxivOk && p.arxivId) || (directMatch.doiOk && p.doi),
         );
         if (matchedPaper) {
           chosenScore = this.calculateMatchScore(
@@ -2098,7 +2485,8 @@ export class LabelMatcher {
               pdfLabel,
               entryIndex: bestIdx,
               entryId: entry.id,
-              confidence: bestScore >= SCORE.VALIDATION_ACCEPT ? "high" : "medium",
+              confidence:
+                bestScore >= SCORE.VALIDATION_ACCEPT ? "high" : "medium",
               matchMethod: "inferred",
             });
             Zotero.debug(
@@ -2122,8 +2510,12 @@ export class LabelMatcher {
         }
       }
       const numLabel = parseInt(normalizedLabel, 10);
-      if (!isNaN(numLabel) && this.indexMap.has(numLabel)) {
-        const idx = this.indexMap.get(numLabel)!;
+      if (
+        Number.isSafeInteger(numLabel) &&
+        numLabel >= 1 &&
+        numLabel <= this.entries.length
+      ) {
+        const idx = numLabel - 1;
         const entry = this.entries[idx];
         results.push({
           pdfLabel,
@@ -2184,7 +2576,7 @@ export class LabelMatcher {
     // EXCEPTION: If maxInspireLabel is 0 (no labels in INSPIRE data), try scoring-based match first
     // Note: noLabelsInInspire and maxInspireLabel are calculated at function start
     const isVersionMismatch =
-      !noLabelsInInspire && !isNaN(numLabel) && numLabel > maxInspireLabel;
+      !noLabelsInInspire && !isNaN(numLabel) && numLabel > maxNumericLabelBound;
 
     // FTR-NO-LABELS-FIX: When INSPIRE has no labels, use scoring-based matching with paperInfos
     // instead of blind index fallback (which assumes PDF order matches INSPIRE order)
@@ -2212,8 +2604,7 @@ export class LabelMatcher {
         // Calculate score for the matched entry
         const matchedPaper = paperInfos.find(
           (p) =>
-            (directMatch.arxivOk && p.arxivId) ||
-            (directMatch.doiOk && p.doi),
+            (directMatch.arxivOk && p.arxivId) || (directMatch.doiOk && p.doi),
         );
         if (matchedPaper) {
           chosenScore = this.calculateMatchScore(
@@ -2264,10 +2655,7 @@ export class LabelMatcher {
 
         // Selection priority (arXiv/DOI already handled by index lookup):
         // year-matched > highest score
-        if (
-          bestYearOk &&
-          (!bestAny || bestYearOk.score >= bestAny.score - 1)
-        ) {
+        if (bestYearOk && (!bestAny || bestYearOk.score >= bestAny.score - 1)) {
           chosenIdx = bestYearOk.idx;
           chosenScore = bestYearOk.score;
           chosenYearOk = true;
@@ -2319,7 +2707,7 @@ export class LabelMatcher {
     // Index-based matching assumes PDF order = INSPIRE order, which is unreliable without labels
     if (isVersionMismatch) {
       Zotero.debug(
-        `[${config.addonName}] [PDF-ANNOTATE] Label [${normalizedLabel}] exceeds INSPIRE max label ${maxInspireLabel}, skipping index fallback to avoid wrong match`,
+        `[${config.addonName}] [PDF-ANNOTATE] Label [${normalizedLabel}] exceeds safe INSPIRE bound ${maxNumericLabelBound}, skipping index fallback to avoid wrong match`,
       );
       // Continue to Strategy 3 (fuzzy match) and Strategy 4 (global arXiv/DOI search)
     } else if (noLabelsInInspire) {
@@ -2327,8 +2715,12 @@ export class LabelMatcher {
       Zotero.debug(
         `[${config.addonName}] [PDF-ANNOTATE] No INSPIRE labels, skipping index fallback for [${normalizedLabel}]`,
       );
-    } else if (!isNaN(numLabel) && this.indexMap.has(numLabel)) {
-      const idx = this.indexMap.get(numLabel)!;
+    } else if (
+      Number.isSafeInteger(numLabel) &&
+      numLabel >= 1 &&
+      numLabel <= this.entries.length
+    ) {
+      const idx = numLabel - 1;
       // Check if there's an INSPIRE label that matches the index
       const entry = this.entries[idx];
       const inspireLabel = entry.label ? parseInt(entry.label, 10) : null;
@@ -2696,19 +3088,31 @@ export class LabelMatcher {
    * FTR-PDF-ANNOTATE-MULTI-LABEL: Deduplicates by entryIndex.
    * FTR-MISSING-FIX: Preserves PDF paper order from match() as primary sort key.
    */
-  matchAll(pdfLabels: string[]): MatchResult[] {
+  matchAll(
+    pdfLabels: string[],
+    nativePackage?: NativeOverlayMatchPackage,
+  ): MatchResult[] {
     const seenIndices = new Set<number>();
     const results: MatchResult[] = [];
 
-    for (const label of pdfLabels) {
-      const matches = this.match(label);
+    const boundedPackage = this.prepareNativeBatchPackage(
+      pdfLabels,
+      nativePackage,
+    );
+    const context = this.createNativeCallContext(boundedPackage, pdfLabels);
+    try {
+      for (const label of pdfLabels) {
+        const matches = this.matchInternal(label, boundedPackage, context);
 
-      for (const match of matches) {
-        if (!seenIndices.has(match.entryIndex)) {
-          seenIndices.add(match.entryIndex);
-          results.push(match);
+        for (const match of matches) {
+          if (!seenIndices.has(match.entryIndex)) {
+            seenIndices.add(match.entryIndex);
+            results.push(match);
+          }
         }
       }
+    } finally {
+      this.releaseNativeCallContext(context);
     }
 
     // FTR-MISSING-FIX: Preserve PDF paper order from match() as primary key
@@ -2716,6 +3120,7 @@ export class LabelMatcher {
     // We only use confidence/method as secondary sort within the same order position
     // __order captures the order from match(), which is PDF paper order
     const methodPriority: Record<string, number> = {
+      overlay: 6,
       exact: 5,
       label: 4,
       index: 3,
@@ -2743,6 +3148,44 @@ export class LabelMatcher {
       .map(({ __order, __methodPri, __confPri, ...r }) => r);
 
     return sorted;
+  }
+
+  private isReliableNativePackage(
+    nativePackage: NativeOverlayMatchPackage | undefined,
+  ): nativePackage is NativeOverlayMatchPackage {
+    return (
+      !!nativePackage &&
+      nativePackage.tokenMap instanceof Map &&
+      nativePackage.tokenMap.size >=
+        NATIVE_OVERLAY_LIMITS.reliableLabelMinimum &&
+      Number.isSafeInteger(nativePackage.revision) &&
+      nativePackage.revision > 0
+    );
+  }
+
+  private prepareNativeBatchPackage(
+    pdfLabels: string[],
+    nativePackage: NativeOverlayMatchPackage | undefined,
+  ): NativeOverlayMatchPackage | undefined {
+    if (
+      !this.isReliableNativePackage(nativePackage) ||
+      pdfLabels.length > NATIVE_OVERLAY_LIMITS.maxBatchLabels
+    ) {
+      return undefined;
+    }
+    let tokenCount = 0;
+    for (const label of pdfLabels) {
+      const tokens = nativePackage.tokenMap.get(label.trim());
+      if (!tokens) continue;
+      if (tokens.length > NATIVE_OVERLAY_LIMITS.maxTokensPerLabel) {
+        return undefined;
+      }
+      tokenCount += tokens.length;
+      if (tokenCount > NATIVE_OVERLAY_LIMITS.maxBatchTokens) {
+        return undefined;
+      }
+    }
+    return nativePackage;
   }
 
   /**
@@ -2895,17 +3338,19 @@ export class LabelMatcher {
    * Get the maximum numeric label from INSPIRE entries.
    * FTR-PDF-MATCHING: Used to detect when PDF labels exceed INSPIRE range.
    */
-  private getMaxInspireLabel(): number {
-    let maxLabel = 0;
-    for (const entry of this.entries) {
-      if (entry.label) {
-        const num = parseInt(entry.label, 10);
-        if (!isNaN(num) && num > maxLabel) {
-          maxLabel = num;
-        }
-      }
-    }
-    return maxLabel;
+  getMaxInspireLabel(): number {
+    return this.maxInspireLabel;
+  }
+
+  /** Cheap label coverage already accumulated by the constructor's index pass. */
+  getInspireLabelStats(): {
+    totalEntries: number;
+    labelAvailableCount: number;
+  } {
+    return {
+      totalEntries: this.entries.length,
+      labelAvailableCount: this.inspireLabelAvailableCount,
+    };
   }
 
   /**
@@ -2948,5 +3393,22 @@ export class LabelMatcher {
       },
       authorLabels,
     );
+  }
+}
+
+function primitiveMetadataString(value: unknown): string | undefined {
+  if (
+    typeof value !== "string" &&
+    typeof value !== "number" &&
+    typeof value !== "bigint" &&
+    typeof value !== "boolean" &&
+    typeof value !== "symbol"
+  ) {
+    return undefined;
+  }
+  try {
+    return String(value);
+  } catch {
+    return undefined;
   }
 }
