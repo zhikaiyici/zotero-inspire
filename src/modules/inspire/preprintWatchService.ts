@@ -1129,7 +1129,7 @@ async function updatePreprintWithFullMetadata(
   const citekey_pref = getPref("citekey");
   if (citekey_pref === "inspire" && meta.citekey) {
     const zoteroVersion = Zotero.version;
-    if (Services.vc.compare(zoteroVersion, "8") > 0) {
+    if (Services.vc.compare(zoteroVersion, "7.0.31") >= 0) {
       item.setField("citationKey", meta.citekey);
     } else {
       if (extra.includes("Citation Key")) {

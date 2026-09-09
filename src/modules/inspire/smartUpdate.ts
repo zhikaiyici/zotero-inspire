@@ -870,7 +870,7 @@ export function compareItemWithInspire(
 
     const zoteroVersion = Zotero.version;
     // Citation key field comparison
-    if (Services.vc.compare(zoteroVersion, "7.0.31") > 0) {
+    if (Services.vc.compare(zoteroVersion, "7.0.31") >= 0) {
       // If we're on Zotero 8+, we expect the citekey to be in the citationKey field.
       // If it's not there, it means the user hasn't set a custom citekey, so we can treat it as null.
       let localCitationKey = (item.getField("citationKey") as string | undefined)?.trim() || null;
