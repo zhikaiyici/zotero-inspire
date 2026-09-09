@@ -2021,7 +2021,7 @@ export class ZInspire {
       updateBtn.textContent = getString("preprint-update-selected");
       updateBtn.style.cssText = `
         padding: 6px 16px; min-width: 80px; border: none;
-        border-radius: 4px; background-color: #0066cc; color: #fff;
+        border-radius: 4px; background: #0066cc; color: #fff;
         cursor: pointer; font-size: 13px; font-weight: 500;
       `;
       buttonContainer.appendChild(updateBtn);
