@@ -2605,7 +2605,7 @@ export async function setInspireMeta(
 
       if (citekey_pref === "inspire" && metaInspire.citekey) {
         const zoteroVersion = Zotero.version;
-        if (Services.vc.compare(zoteroVersion, "7.0.31") > 0 && !item.getField("citationKey")) {
+        if (Services.vc.compare(zoteroVersion, "8") > 0 && !item.getField("citationKey")) {
           item.setField("citationKey", metaInspire.citekey);
         } else {
           if (extra.includes("Citation Key")) {
@@ -2874,7 +2874,7 @@ export async function setInspireMetaSelective(
         metaInspire.citekey
       ) {
         const zoteroVersion = Zotero.version;
-        if (Services.vc.compare(zoteroVersion, "7.0.31") > 0 && allowedFields.has("citationKey")) {
+        if (Services.vc.compare(zoteroVersion, "8") > 0 && allowedFields.has("citationKey")) {
           item.setField("citationKey", metaInspire.citekey);
         } else {
           if (allowedFields.has("citekey")) {
