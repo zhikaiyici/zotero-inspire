@@ -2,6 +2,7 @@
 
 [![zotero target version](https://img.shields.io/badge/Zotero-7%20to%2010-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
 [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
+[![GitHub downloads, all releases](https://img.shields.io/github/downloads/fkguo/zotero-inspire/total?style=flat-square&logo=github&label=downloads)](https://github.com/fkguo/zotero-inspire/releases)
 
 A Zotero plugin that integrates [INSPIRE-HEP](https://inspirehep.net), a community maintained database for **high energy physics and related fields**, into your reference management workflow. Browse references, citations, and author papers directly in Zotero without leaving your library.
 
@@ -105,6 +106,7 @@ Enable them via the column picker in the items list header. Preferences:
 
 - **Cites column: exclude self-citations** — Switch between total vs. without self-citations. If the list doesn't update immediately, switch collections or restart Zotero.
 - **Legacy: write arXiv ID into Journal Abbr.** — Disabled by default now that an `arXiv` column exists (kept for backward compatibility).
+- **Keep Preprint item type for unpublished papers** (on by default) — Preprint (and Report) items are left as they are until INSPIRE reports a journal publication, at which point they become Journal Article with the journal data. Unpublished arXiv papers that earlier versions stored as Journal Article are turned back into Preprint on their next metadata update, and papers imported from the panel are created as Preprint. Preprint Watch monitors Preprint items as well. Ignored while the legacy option above is on, because the Journal Abbr. field exists only for Journal Article. Untick it to keep converting everything to Journal Article.
 
 ---
 
@@ -235,7 +237,7 @@ Right-click items or collections → `INSPIRE` → `Download references cache` t
 
 ### Preprint Monitoring
 
-Enable **Preprint Watch** in Preferences to automatically check if your arXiv preprints have been published.
+Enable **Preprint Watch** in Preferences to automatically check if your arXiv preprints have been published. Both Journal Article items carrying arXiv data and Zotero `Preprint` items are monitored (see **Keep Preprint item type** above).
 
 ### Smart Update Mode
 
@@ -266,18 +268,19 @@ Add this to your Zotero `engines.json` for quick INSPIRE lookups:
 
 Access via `Tools` → `Add-ons` → `INSPIRE Metadata Updater` → `Preferences`:
 
-| Setting                               | Description                                                          |
-| ------------------------------------- | -------------------------------------------------------------------- |
-| **Auto-fetch for new items**          | Fetch metadata automatically when adding items                       |
-| **Use INSPIRE Citekey**               | Write INSPIRE texkey to Citation Key (Zotero 8+) or Extra (Zotero 7) |
-| **Max authors**                       | Number of authors shown before "et al."                              |
-| **Statistics chart**                  | Show year/citation distribution chart                                |
-| **Local cache**                       | Enable persistent disk cache for offline use                         |
-| **Smart Update**                      | Preserve manual edits during updates                                 |
-| **Preprint Watch**                    | Monitor unpublished preprints                                        |
-| **Fuzzy citation detection**          | For PDFs with broken text layers                                     |
-| **Reuse Zotero 10 citation analysis** | Background reuse of completed Zotero 10.0 results; restart required  |
-| **Abstract LaTeX mode**               | KaTeX (full rendering, default) or Unicode                           |
+| Setting                               | Description                                                                                                                                    |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Auto-fetch for new items**          | Fetch metadata automatically when adding items                                                                                                 |
+| **Use INSPIRE Citekey**               | Write INSPIRE texkey to Citation Key (Zotero 8+) or Extra (Zotero 7)                                                                           |
+| **Max authors**                       | Number of authors shown before "et al."                                                                                                        |
+| **Statistics chart**                  | Show year/citation distribution chart                                                                                                          |
+| **Local cache**                       | Enable persistent disk cache for offline use                                                                                                   |
+| **Smart Update**                      | Preserve manual edits during updates                                                                                                           |
+| **Preprint Watch**                    | Monitor unpublished preprints                                                                                                                  |
+| **Keep Preprint item type**           | On by default: Preprint/Report items stay until INSPIRE reports a journal publication; unpublished Journal Article items become Preprint again |
+| **Fuzzy citation detection**          | For PDFs with broken text layers                                                                                                               |
+| **Reuse Zotero 10 citation analysis** | Background reuse of completed Zotero 10.0 results; restart required                                                                            |
+| **Abstract LaTeX mode**               | KaTeX (full rendering, default) or Unicode                                                                                                     |
 
 ---
 
@@ -306,24 +309,24 @@ Access via `Tools` → `Add-ons` → `INSPIRE Metadata Updater` → `Preferences
 
 zotero-inspire registers an authenticated
 `POST /connector/zinspireBibtex` endpoint for trusted local clients such as
-`zotero-cite`. It resolves Better BibTeX/CAYW citation keys across personal and
-group libraries and rewrites each entry key to the requested citation key. The
-only INSPIRE lookup key is the recid stored by zotero-inspire as the canonical
-pair `archive = "INSPIRE"` and numeric `archiveLocation`. With that pair, the
-endpoint requests INSPIRE only by recid. Without a canonical recid, or when that
-recid returns an explicit INSPIRE `404`, it exports the same uniquely matched
-item through Better BibTeX as a narrow fallback. DOI, arXiv, URL, and Extra are
-not used to discover an INSPIRE record; other INSPIRE failures remain errors.
-Request handling does not modify Zotero items, libraries, or preferences and
-uses a dedicated read token, separate from the write API. Full versioned
-contract: [`docs/EXTERNAL_INSPIRE_BIBTEX_API.md`](docs/EXTERNAL_INSPIRE_BIBTEX_API.md).
+[`fkguo/zotero-cite`](https://github.com/fkguo/zotero-cite), a fork of the
+`zotero-cite` VS Code extension with INSPIRE-HEP support. Use that fork: the
+upstream `zotero-cite` has no zotero-inspire settings and does not call this
+endpoint. Given Better BibTeX/CAYW citation keys, the endpoint finds the
+matching items across personal and group libraries, fetches their BibTeX from
+INSPIRE using the record ID stored by zotero-inspire, and rewrites each entry
+key to the requested citation key. Items without an INSPIRE record fall back to
+a Better BibTeX export. The endpoint is read-only and uses its own token,
+separate from the write API. Full versioned contract:
+[`docs/EXTERNAL_INSPIRE_BIBTEX_API.md`](docs/EXTERNAL_INSPIRE_BIBTEX_API.md).
 
 ### Zotero writes
 
 Since **3.0.3**, zotero-inspire registers an authenticated
 `POST /connector/zinspireWrite` endpoint so trusted local tools can do what
 Zotero's read-only Local API cannot: attach a local file to an item, and
-trash/erase items. This is what the **autoresearch `zotero-mcp` / `hep-mcp`**
+trash/erase items. This is what the
+**[nullius](https://github.com/fkguo/nullius) `zotero-mcp` / `hep-mcp`**
 integration uses for PDF attachment and deletion. Full contract (auth,
 operations, errors, dependency notes):
 [`docs/EXTERNAL_WRITE_API.md`](docs/EXTERNAL_WRITE_API.md).

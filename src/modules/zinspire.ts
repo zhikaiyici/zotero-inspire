@@ -207,6 +207,8 @@ import {
   // Item updater
   ZInspire,
   setInspireMeta,
+  getItemTypePolicy,
+  resolveNewItemType,
   setCrossRefCitations,
   saveItemWithPendingInspireNote,
   // Local cache
@@ -17741,7 +17743,9 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
     const originalItemID = this.currentItemID;
     const scrollState = this.captureScrollState();
 
-    const newItem = new Zotero.Item("journalArticle");
+    const newItem = new Zotero.Item(
+      resolveNewItemType(meta as jsobject, getItemTypePolicy()),
+    );
     newItem.libraryID = target.libraryID ?? currentItem.libraryID;
     const targetCollectionIDs = Array.from(
       new Set(target.collectionIDs),

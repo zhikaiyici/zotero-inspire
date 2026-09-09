@@ -88,8 +88,21 @@ export {
   setInspireMetaSelective,
   setCrossRefCitations,
   saveItemWithPendingInspireNote,
+  getItemTypePolicy,
 } from "./itemUpdater";
 export { MemoryMonitor } from "./memoryMonitor";
+export {
+  resolveInspireItemType,
+  resolveNewItemType,
+  policyFromPrefs,
+  hasJournalPublicationInfo,
+  hasLocalPublicationInfo,
+  isBookRecord,
+  type ItemTypePolicy,
+  type ItemTypeMeta,
+  type LocalPublicationFields,
+  type TargetItemType,
+} from "./itemTypePolicy";
 
 // Re-export CrossRef service
 export { crossrefFetch } from "./crossrefService";

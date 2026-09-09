@@ -130,7 +130,8 @@ responses are capped at 1 MiB.
 
 ## Consumers / dependency note
 
-This endpoint is consumed by the **autoresearch `zotero-mcp` package** (and by
+This endpoint is consumed by the
+**[nullius](https://github.com/fkguo/nullius) `zotero-mcp` package** (and by
 `hep-mcp`, which re-exposes those tools). Because the native Local API is
 read-only, the MCP's `zotero_add` file attachment and its `zotero_delete` tool
 route through this endpoint:
