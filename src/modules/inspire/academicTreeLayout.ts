@@ -1,18 +1,26 @@
+import { createAcademicRowOrder } from "./academicTreeRowOrder";
+import {
+  separateAcademicCards as separate,
+  pinAcademicCardCenters as pinCardCenters,
+  packPinnedAcademicRow as packPinnedRow,
+} from "./academicTreePacking";
+import { academicNodeOrder } from "./academicTreeSorting";
 import type { AcademicTreeGraph, AcademicTreeNode } from "./academicTreeTypes";
 
 export interface AcademicLayoutNode extends AcademicTreeNode {
   x: number;
   y: number;
+  width: number;
+  height: number;
 }
 export interface AcademicTreeLayout {
   nodes: AcademicLayoutNode[];
   width: number;
   height: number;
 }
-export const ACADEMIC_NODE_WIDTH = 148;
-export const ACADEMIC_NODE_HEIGHT = 54;
-const COLUMN_STEP = ACADEMIC_NODE_WIDTH + 24;
-const ROW_STEP = ACADEMIC_NODE_HEIGHT + 38;
+export const ACADEMIC_NODE_WIDTH = 144;
+export const ACADEMIC_NODE_HEIGHT = 55;
+const COLUMN_STEP = ACADEMIC_NODE_WIDTH + 18;
 
 /** Fit a label to two lines, preferring word boundaries and keeping Unicode code points intact. */
 export function wrapAcademicName(
@@ -53,27 +61,6 @@ export function wrapAcademicName(
   return lines;
 }
 
-/** Closest ordered coordinates with a full card's width between neighbours. */
-function separate(desired: number[]): number[] {
-  const blocks: Array<{ sum: number; count: number }> = [];
-  desired.forEach((x, i) => {
-    blocks.push({ sum: x - i * COLUMN_STEP, count: 1 });
-    while (blocks.length > 1) {
-      const right = blocks.at(-1)!,
-        left = blocks.at(-2)!;
-      if (left.sum / left.count <= right.sum / right.count) break;
-      left.sum += right.sum;
-      left.count += right.count;
-      blocks.pop();
-    }
-  });
-  const result: number[] = [];
-  for (const block of blocks)
-    for (let i = 0; i < block.count; i++)
-      result.push(block.sum / block.count + result.length * COLUMN_STEP);
-  return result;
-}
-
 /** Count edge crossings in O(E log E), excluding shared endpoints. */
 function inversions(values: number[]): number {
   if (values.length < 2) return 0;
@@ -94,33 +81,129 @@ function inversions(values: number[]): number {
   return count;
 }
 
+/** Discovery depth is not a generation: a student can first appear as a co-advisor.
+ * Rank the displayed relationships independently, keeping cycles on one row and
+ * retaining the original discovery depths for traversal and expansion limits.
+ */
+function displayRanks(graph: AcademicTreeGraph): Map<string, number> {
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const outgoing = new Map(
+    graph.nodes.map((node) => [node.id, new Set<string>()]),
+  );
+  for (const edge of graph.edges)
+    if (byId.has(edge.source) && byId.has(edge.target))
+      outgoing.get(edge.source)!.add(edge.target);
+  const index = new Map<string, number>(),
+    low = new Map<string, number>();
+  const stack: string[] = [],
+    active = new Set<string>();
+  const components: string[][] = [];
+  const visit = (id: string) => {
+    index.set(id, index.size);
+    low.set(id, index.get(id)!);
+    stack.push(id);
+    active.add(id);
+    for (const next of [...outgoing.get(id)!].sort()) {
+      if (!index.has(next)) {
+        visit(next);
+        low.set(id, Math.min(low.get(id)!, low.get(next)!));
+      } else if (active.has(next))
+        low.set(id, Math.min(low.get(id)!, index.get(next)!));
+    }
+    if (low.get(id) === index.get(id)) {
+      const members: string[] = [];
+      let member: string;
+      do {
+        member = stack.pop()!;
+        active.delete(member);
+        members.push(member);
+      } while (member !== id);
+      components.push(members.sort());
+    }
+  };
+  for (const id of [...byId.keys()].sort()) if (!index.has(id)) visit(id);
+  const componentOf = new Map<string, number>();
+  components.forEach((members, i) =>
+    members.forEach((id) => componentOf.set(id, i)),
+  );
+  const next = components.map(() => new Set<number>());
+  const indegree = components.map(() => 0);
+  const rank = components.map((members) =>
+    Math.min(...members.map((id) => byId.get(id)!.level)),
+  );
+  for (const [id, children] of outgoing)
+    for (const child of children) {
+      const from = componentOf.get(id)!,
+        to = componentOf.get(child)!;
+      if (from !== to && !next[from].has(to)) {
+        next[from].add(to);
+        indegree[to]++;
+      }
+    }
+  const queue = components.map((_, i) => i).filter((i) => !indegree[i]);
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const from = queue[cursor];
+    for (const to of next[from]) {
+      rank[to] = Math.max(rank[to], rank[from] + 1);
+      if (--indegree[to] === 0) queue.push(to);
+    }
+  }
+  const root = componentOf.get(graph.rootId);
+  const offset = root === undefined ? 0 : rank[root];
+  return new Map(
+    graph.nodes.map((node) => [
+      node.id,
+      rank[componentOf.get(node.id)!] - offset,
+    ]),
+  );
+}
+
 /** Layered layout with crossing reduction and parent/child alignment. Never merges identities. */
 export function layoutAcademicTree(
   graph: AcademicTreeGraph,
+  measure: (text: string) => number = (text) => Array.from(text).length * 7,
+  sort: import("./academicTreeTypes").AcademicSortMode = "name",
 ): AcademicTreeLayout {
   const layers = new Map<number, AcademicTreeNode[]>();
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const ranks = displayRanks(graph);
+  const dimensions = new Map(
+    graph.nodes.map((node) => {
+      const width = Math.max(
+        100,
+        Math.min(ACADEMIC_NODE_WIDTH, measure(node.name) + 20),
+      );
+      const lines =
+        wrapAcademicName(node.name, measure, width - 20).length || 1;
+      return [
+        node.id,
+        { width, height: lines * 16 + (node.institution ? 11 : 0) + 12 },
+      ];
+    }),
+  );
+  const nameOrder = academicNodeOrder(graph, sort);
   const incoming = new Map<string, string[]>(),
     outgoing = new Map<string, string[]>();
   const bands = new Map<number, typeof graph.edges>();
   for (const node of graph.nodes) {
-    const layer = layers.get(node.level) ?? [];
+    const level = ranks.get(node.id)!;
+    const layer = layers.get(level) ?? [];
     layer.push(node);
-    layers.set(node.level, layer);
+    layers.set(level, layer);
     incoming.set(node.id, []);
     outgoing.set(node.id, []);
   }
   for (const edge of graph.edges) {
     const from = byId.get(edge.source),
       to = byId.get(edge.target);
-    // Cyclic or same-generation relationships remain in the graph, but cannot order a DAG.
-    if (!from || !to || from.level >= to.level) continue;
+    // Only relationships inside a cycle remain on one row.
+    if (!from || !to || ranks.get(from.id)! >= ranks.get(to.id)!) continue;
     outgoing.get(from.id)!.push(to.id);
     incoming.get(to.id)!.push(from.id);
-    if (to.level === from.level + 1) {
-      const band = bands.get(from.level) ?? [];
+    if (ranks.get(to.id)! === ranks.get(from.id)! + 1) {
+      const band = bands.get(ranks.get(from.id)!) ?? [];
       band.push(edge);
-      bands.set(from.level, band);
+      bands.set(ranks.get(from.id)!, band);
     }
   }
   for (const neighbours of [incoming, outgoing])
@@ -132,9 +215,7 @@ export function layoutAcademicTree(
       positions.set(node.id, (i - (layer.length - 1) / 2) * COLUMN_STEP),
     );
   for (const layer of layers.values()) {
-    layer.sort(
-      (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
-    );
+    layer.sort(nameOrder);
     assign(layer);
   }
   const crossings = () =>
@@ -184,10 +265,10 @@ export function layoutAcademicTree(
   // Barycentric sorting can leave small groups inverted around shared advisors.
   // Swap adjacent cards only when the total number of crossings strictly falls.
   const adjacent = (id: string, direction: "up" | "down") => {
-    const level = byId.get(id)!.level + (direction === "up" ? -1 : 1);
+    const level = ranks.get(id)! + (direction === "up" ? -1 : 1);
     return (direction === "up" ? incoming : outgoing)
       .get(id)!
-      .filter((other) => byId.get(other)!.level === level);
+      .filter((other) => ranks.get(other)! === level);
   };
   const above = new Map(
     graph.nodes.map((node) => [node.id, adjacent(node.id, "up")]),
@@ -220,38 +301,141 @@ export function layoutAcademicTree(
     }
     if (!changed) break;
   }
-  // Align actual x coordinates, not ordinal row indices. Constrained projection
-  // keeps the crossing-minimizing order while letting sparse generations spread
-  // over the denser student branches beneath them.
-  for (let sweep = 0; sweep < 13; sweep++) {
-    const neighbours = sweep % 2 ? incoming : outgoing;
-    for (const level of sweep % 2 ? levels : [...levels].reverse()) {
-      const row = layers.get(level)!;
-      const coordinates = separate(
-        row.map((node) =>
-          average(neighbours.get(node.id)!, positions.get(node.id)!),
-        ),
-      );
-      row.forEach((node, i) => positions.set(node.id, coordinates[i]));
-    }
+  // Preserve the focus's unambiguous supervisor chain as a vertical spine.
+  // Multiple supervisors stay distinct and are arranged around their student.
+  const spine = new Set([graph.rootId]);
+  let current = graph.rootId;
+  while (incoming.get(current)?.length === 1) {
+    const parent = incoming.get(current)![0];
+    if (spine.has(parent)) break;
+    spine.add(parent);
+    current = parent;
   }
-  const left = Math.min(0, ...positions.values());
-  const right = Math.max(0, ...positions.values()) + ACADEMIC_NODE_WIDTH;
-  const width = Math.max(650, right - left + 48);
+  const orderRow = createAcademicRowOrder(graph, sort, ranks);
+  // Reserve room for exclusive co-supervisors above a shared student. Otherwise
+  // two supervisors of one compact card push the neighbouring families sideways.
+  const packingWidth = (node: AcademicTreeNode) => {
+    const parents = incoming
+      .get(node.id)!
+      .filter(
+        (id) =>
+          !spine.has(id) &&
+          !incoming.get(id)!.length &&
+          outgoing.get(id)!.length === 1,
+      );
+    return Math.max(
+      dimensions.get(node.id)!.width,
+      parents.reduce((sum, id) => sum + dimensions.get(id)!.width, 0) +
+        Math.max(0, parents.length - 1) * 18,
+    );
+  };
+  let focusX: number | undefined;
+  for (const level of [...levels].reverse()) {
+    const row = layers.get(level)!;
+    const compact = separate(
+      row.map(() => 0),
+      row.map((node) => dimensions.get(node.id)!.width),
+    );
+    const targets = new Map(
+      row.map((node, i) => [
+        node.id,
+        average(outgoing.get(node.id)!, compact[i]),
+      ]),
+    );
+    orderRow(row, (node) => targets.get(node.id)!);
+    const widths = row.map(packingWidth);
+    const desired = row.map((node) => targets.get(node.id)!);
+    const coordinates = separate(desired, widths);
+    // Anchor the focus over the extent of its direct students BEFORE resolving
+    // collisions with its siblings. Otherwise alphabetical sibling order can
+    // push only the focus sideways while all its students stay behind.
+    if (row.some((node) => node.id === graph.rootId)) {
+      const students = outgoing.get(graph.rootId)!;
+      focusX = students.length
+        ? (Math.min(
+            ...students.map(
+              (id) => positions.get(id)! - dimensions.get(id)!.width / 2,
+            ),
+          ) +
+            Math.max(
+              ...students.map(
+                (id) => positions.get(id)! + dimensions.get(id)!.width / 2,
+              ),
+            )) /
+          2
+        : coordinates[row.findIndex((node) => node.id === graph.rootId)];
+    }
+    const fixed =
+      focusX === undefined ? -1 : row.findIndex((node) => spine.has(node.id));
+    if (fixed >= 0) pinCardCenters(coordinates, widths, fixed, focusX!);
+    row.forEach((node, i) => positions.set(node.id, coordinates[i]));
+    if (fixed >= 0) {
+      // Root anchoring moves its alphabetically ordered siblings. Reinsert
+      // supplemental supervisors against those FINAL positions so they do not
+      // get dragged away from their shared students with the sibling row.
+      const target = (node: AcademicTreeNode) =>
+        !incoming.get(node.id)!.length && !spine.has(node.id)
+          ? targets.get(node.id)!
+          : positions.get(node.id)!;
+      orderRow(row, target);
+      const anchor = row.findIndex((node) => spine.has(node.id));
+      const packed = packPinnedRow(
+        row,
+        (node) =>
+          !incoming.get(node.id)!.length && !spine.has(node.id)
+            ? target(node)
+            : focusX!,
+        (node) => dimensions.get(node.id)!.width,
+        anchor,
+        focusX!,
+        (node) => !incoming.get(node.id)!.length && !spine.has(node.id),
+      );
+      row.forEach((node, i) => positions.set(node.id, packed[i]));
+    }
+    if (row.some((node) => node.id === graph.rootId))
+      focusX = positions.get(graph.rootId);
+  }
+  const left = Math.min(
+    0,
+    ...graph.nodes.map(
+      (node) => positions.get(node.id)! - dimensions.get(node.id)!.width / 2,
+    ),
+  );
+  const right = Math.max(
+    0,
+    ...graph.nodes.map(
+      (node) => positions.get(node.id)! + dimensions.get(node.id)!.width / 2,
+    ),
+  );
+  const width = Math.max(240, right - left + 32);
   const offset = (width - (right - left)) / 2 - left;
+  const rowY = new Map<number, number>();
+  let height = 24;
+  for (const level of levels) {
+    rowY.set(level, height);
+    const sources = new Set(
+      graph.edges
+        .filter(
+          (edge) =>
+            ranks.get(edge.source)! <= level && ranks.get(edge.target)! > level,
+        )
+        .map((edge) => edge.source),
+    );
+    height +=
+      Math.max(
+        ...layers.get(level)!.map((node) => dimensions.get(node.id)!.height),
+      ) + Math.max(30, 10 + 4 * (sources.size + 1));
+  }
   return {
     width,
-    height: Math.max(
-      200,
-      ((levels.at(-1) ?? 0) - (levels[0] ?? 0)) * ROW_STEP +
-        ACADEMIC_NODE_HEIGHT +
-        48,
-    ),
+    height: Math.max(100, height - 6),
     nodes: levels.flatMap((level) =>
       layers.get(level)!.map((node) => ({
         ...node,
-        x: positions.get(node.id)! + offset,
-        y: (level - levels[0]) * ROW_STEP + 24,
+        ...dimensions.get(node.id)!,
+        x:
+          positions.get(node.id)! + offset - dimensions.get(node.id)!.width / 2,
+        y: rowY.get(level)!,
       })),
     ),
   };

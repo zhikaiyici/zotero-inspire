@@ -4,6 +4,11 @@
 
 // Re-export constants
 export * from "./constants";
+export {
+  SearchHistoryStore,
+  literatureSearchHistory,
+  academicSearchHistory,
+} from "./searchHistory";
 
 // Re-export types (including FTR-PREPRINT-WATCH types)
 export * from "./types";
@@ -497,3 +502,18 @@ export {
   searchAcademicAuthors,
 } from "./academicTreeDataService";
 export { layoutAcademicTree } from "./academicTreeLayout";
+
+export {
+  academicReachable,
+  projectAcademicTree,
+  academicRelationshipPath,
+  academicTreeCSV,
+  type AcademicTreeViewState,
+} from "./academicTreeExploration";
+
+export { fetchAuthorRecord, retainAuthorRecord } from "./authorProfileRecords";
+export {
+  academicEducationYears,
+  academicNodeOrder,
+  academicSortYears,
+} from "./academicTreeSorting";

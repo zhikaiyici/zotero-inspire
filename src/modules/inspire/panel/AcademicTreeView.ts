@@ -1,4 +1,11 @@
+import {
+  graphButton,
+  styleGraphSelect,
+  styleGraphToolbar,
+} from "./graphControls";
 import { createAbortController } from "../utils";
+import { academicSearchHistory } from "../searchHistory";
+import { SearchHistoryInput } from "./SearchHistoryInput";
 import {
   AuthorPreviewController,
   type AuthorPreviewCallbacks,
@@ -26,6 +33,13 @@ import {
 } from "../academicTreeDataService";
 import { buildAcademicTree } from "../academicTreeService";
 import { AcademicTreeCanvas } from "./AcademicTreeCanvas";
+import { AcademicTreeTools } from "./AcademicTreeTools";
+import { exportAcademicTree } from "./AcademicTreeExport";
+import {
+  academicReachable,
+  academicPrimaryLineage,
+  type AcademicTreeViewState,
+} from "../academicTreeExploration";
 import { NAVIGATION_STACK_LIMIT } from "../constants";
 
 interface AcademicTreeLoad {
@@ -35,6 +49,7 @@ interface AcademicTreeLoad {
   anchorId?: string;
   existing?: AcademicTreeGraph;
   refresh: boolean;
+  batch?: boolean;
   expansions?: Array<{
     id: string;
     direction: AcademicDirection;
@@ -57,18 +72,21 @@ interface AcademicTreeSnapshot {
   moreHidden: boolean;
   pending?: AcademicTreeLoad;
   recovery?: "retry" | "continue";
+  exploration: AcademicTreeViewState;
 }
 
 /** Author genealogy content hosted in the citation graph's resizable window. */
 export class AcademicTreeView {
   readonly element: HTMLDivElement;
   private canvas: AcademicTreeCanvas;
+  private tools: AcademicTreeTools;
   private authorPreview: AuthorPreviewController;
   private status: HTMLDivElement;
   private details: HTMLDivElement;
   private actions: HTMLDivElement;
   private candidates: HTMLDivElement;
   private searchInput: HTMLInputElement;
+  private searchHistory: SearchHistoryInput;
   private up: HTMLSelectElement;
   private down: HTMLSelectElement;
   private degree: HTMLSelectElement;
@@ -135,6 +153,8 @@ export class AcademicTreeView {
       },
     });
     const toolbar = this.row();
+    styleGraphToolbar(toolbar);
+    toolbar.style.flexWrap = "wrap";
     this.back = this.button(
       "academic-tree-back",
       () => void this.navigate("back"),
@@ -155,7 +175,7 @@ export class AcademicTreeView {
     this.searchInput.setAttribute("aria-label", this.searchInput.placeholder);
     this.searchInput.value = initialAuthor?.fullName || "";
     this.searchInput.style.cssText =
-      "flex:1;min-width:140px;max-width:280px;background:var(--material-background,#fff);color:inherit;border:1px solid var(--fill-quinary,#ccc);padding:5px;border-radius:4px";
+      "flex:1;min-width:140px;max-width:210px;background:var(--material-background,#fff);color:inherit;border:1px solid var(--fill-quinary,#ccc);padding:4px 9px;border-radius:12px;font-size:12px";
     const search = this.button(
       "academic-tree-search",
       () => void this.search(),
@@ -166,7 +186,25 @@ export class AcademicTreeView {
         void this.search();
       }
     });
-    toolbar.append(this.searchInput, search);
+    const searchWrapper = doc.createElement("div");
+    searchWrapper.style.cssText =
+      "position:relative;display:flex;flex:1;min-width:140px;max-width:210px;overflow:hidden";
+    this.searchInput.style.width = "100%";
+    this.searchInput.style.boxSizing = "border-box";
+    searchWrapper.append(this.searchInput);
+    const historyButton = this.button(
+      "references-panel-search-history-tooltip",
+      () => {},
+    );
+    historyButton.textContent = "▾";
+    this.searchHistory = new SearchHistoryInput(
+      this.searchInput,
+      searchWrapper,
+      historyButton,
+      academicSearchHistory,
+      (query) => void this.search(query),
+    );
+    toolbar.append(searchWrapper, historyButton, search);
     this.up = this.depth(toolbar, "academic-tree-up");
     this.down = this.depth(toolbar, "academic-tree-down");
     this.degree = doc.createElement("select");
@@ -202,14 +240,19 @@ export class AcademicTreeView {
       () => void this.load(undefined, undefined, "refresh"),
     );
     this.refresh.title = getString("academic-tree-refresh-hint");
+    this.refresh.textContent = "↻";
+    this.refresh.style.fontSize = "18px";
+    this.refresh.style.padding = "0 8px";
     this.recover = this.button(
       "academic-tree-retry",
       () => void this.load(undefined, undefined, "resume"),
     );
-    controls.append(this.refresh, this.recover, this.stop, this.more);
+    toolbar.prepend(this.refresh);
+    controls.append(this.recover, this.stop, this.more);
     this.updateLoadControls();
     this.status = doc.createElement("div");
     this.status.setAttribute("role", "status");
+    this.status.setAttribute("data-academic-status", "");
     this.status.style.cssText =
       "color:var(--fill-secondary,#64748b);flex:1;min-width:180px;font-size:12px";
     this.status.textContent = getString("academic-tree-choose");
@@ -237,6 +280,62 @@ export class AcademicTreeView {
       },
       () => this.authorPreview.scheduleHide(),
     );
+    this.tools = new AcademicTreeTools(doc, {
+      graph: () => this.graph,
+      selected: () => this.selected,
+      changed: () => {
+        this.renderGraph();
+        this.updateStatus(this.busy);
+      },
+      locate: (id) => {
+        const node = this.graph?.nodes.find((node) => node.id === id);
+        if (node) {
+          this.select(node);
+          this.canvas.center(id);
+        }
+      },
+      fitPath: (ids) => this.canvas.fitPeople(ids),
+      expandAncestors: () => {
+        if (!this.graph || this.busy) return;
+        const ancestors = academicReachable(
+          this.tools.project(this.graph),
+          this.graph.rootId,
+          "up",
+        );
+        ancestors.delete(this.graph.rootId);
+        const tasks = [...ancestors]
+          .filter((id) =>
+            this.graph!.nodes.some((node) => node.id === id && node.recid),
+          )
+          .map((id) => ({ id, direction: "down" as const }));
+        if (tasks.length)
+          void this.load("down", this.graph.rootId, "normal", tasks);
+      },
+      export: async (format, full) => {
+        if (!this.graph) return;
+        try {
+          const saved = await exportAcademicTree(
+            this.doc,
+            full ? this.graph : this.tools.project(this.graph),
+            this.canvas,
+            this.tools.state,
+            {
+              up: Number(this.up.value),
+              down: Number(this.down.value),
+              degree: this.degree.value,
+            },
+            format,
+            full,
+          );
+          if (saved && !this.disposed)
+            this.status.textContent = getString("academic-tree-export-success");
+        } catch {
+          if (!this.disposed)
+            this.status.textContent = getString("academic-tree-export-error");
+        }
+      },
+    });
+    toolbar.append(this.tools.element);
     const stage = doc.createElement("div");
     stage.style.cssText =
       "position:relative;display:flex;flex:1;min-height:200px;overflow:hidden";
@@ -264,16 +363,22 @@ export class AcademicTreeView {
     this.details.textContent = getString("academic-tree-canvas-help");
     this.actions = this.row();
     const note = doc.createElement("div");
-    note.textContent = getString("academic-tree-source-note");
+    note.textContent = getString("academic-tree-legend");
+    note.title = getString("academic-tree-source-note");
     note.style.cssText =
       "padding:4px 12px 8px;color:var(--fill-secondary,#64748b);font-size:11px;flex-shrink:0";
+    const footer = this.row();
+    footer.style.borderTop = "1px solid var(--fill-quinary,#e2e8f0)";
+    this.details.style.cssText =
+      "white-space:pre-line;font-size:12px;flex:1;min-width:200px;max-height:64px;overflow:auto";
+    this.actions.style.padding = "0";
+    footer.append(this.details, this.actions);
     this.element.append(
       toolbar,
       controls,
       this.candidates,
       stage,
-      this.details,
-      this.actions,
+      footer,
       note,
     );
     const unload = () => this.dispose();
@@ -298,24 +403,16 @@ export class AcademicTreeView {
     return row;
   }
   private button(key: FluentMessageId, action: () => void) {
-    const button = this.doc.createElement("button");
-    button.type = "button";
-    button.textContent = getString(key);
-    button.title = button.textContent;
-    button.setAttribute("aria-label", button.textContent);
-    button.style.cssText =
-      "border:1px solid var(--fill-quinary,#cbd5e1);border-radius:5px;padding:4px 9px;background:var(--material-background,#fff);color:inherit;cursor:pointer";
-    button.addEventListener("click", action);
-    return button;
+    return graphButton(this.doc, getString(key), action);
   }
   private styleSelect(select: HTMLSelectElement) {
-    select.style.cssText =
-      "font:inherit;color:inherit;background:var(--material-background,#fff);border:1px solid var(--fill-quinary,#cbd5e1);border-radius:5px;padding:4px 6px;max-width:100%";
+    styleGraphSelect(select);
   }
   private depth(toolbar: HTMLElement, key: FluentMessageId) {
     const label = this.doc.createElement("label");
     label.textContent = `${getString(key)} `;
-    label.style.cssText = "display:flex;align-items:center;gap:5px";
+    label.style.cssText =
+      "display:flex;align-items:center;gap:4px;font-size:12px;color:var(--fill-secondary,#64748b)";
     const select = this.doc.createElement("select");
     select.setAttribute("aria-label", getString(key));
     for (let depth = 0; depth <= ACADEMIC_TREE_MAX_DEPTH; depth++) {
@@ -335,6 +432,9 @@ export class AcademicTreeView {
     return select;
   }
   private async search(query = this.searchInput.value) {
+    query = query.trim();
+    if (!query || this.disposed) return;
+    this.searchHistory.remember(query);
     this.searchAbort?.abort();
     const controller = createAbortController();
     if (!controller) {
@@ -406,6 +506,11 @@ export class AcademicTreeView {
       moreHidden: this.more.hidden,
       pending: this.pending,
       recovery: this.busy ? "continue" : this.recovery,
+      exploration: {
+        ...this.tools.state,
+        collapsed: [...this.tools.state.collapsed],
+        path: [...this.tools.state.path],
+      },
     };
   }
   private pushHistory(
@@ -437,6 +542,7 @@ export class AcademicTreeView {
     this.initialAuthor = entry.author;
     this.root = entry.root;
     this.graph = entry.graph;
+    this.tools.restore(entry.exploration);
     this.selected = entry.selected;
     this.searchInput.value = entry.author.fullName;
     this.up.value = entry.up;
@@ -453,7 +559,7 @@ export class AcademicTreeView {
     this.more.hidden = entry.moreHidden;
     this.updateNavigation();
     if (this.graph) {
-      this.canvas.render(this.graph, this.selected);
+      this.renderGraph();
       const selected = this.graph.nodes.find(
         (node) => node.id === this.selected,
       );
@@ -492,6 +598,7 @@ export class AcademicTreeView {
     this.searchInput.value = node.name;
     this.root = undefined;
     this.graph = undefined;
+    this.tools.restore();
     this.selected = undefined;
     this.limit = ACADEMIC_TREE_INITIAL_LIMIT;
     this.pending = undefined;
@@ -501,6 +608,7 @@ export class AcademicTreeView {
     await this.load();
   }
   private updateLoadControls() {
+    this.tools?.sync(this.graph, this.busy);
     this.refresh.disabled = this.busy || !this.initialAuthor?.recid;
     this.stop.hidden = !this.busy;
     this.stop.disabled = !this.busy;
@@ -517,6 +625,7 @@ export class AcademicTreeView {
     expansion?: AcademicDirection,
     anchorId?: string,
     mode: "normal" | "refresh" | "resume" = "normal",
+    batch?: AcademicTreeLoad["expansions"],
   ) {
     const anchor = expansion
       ? this.graph?.nodes.find(
@@ -551,6 +660,7 @@ export class AcademicTreeView {
             source: createAcademicTreeSession(mode === "refresh"),
             recid,
             expansion,
+            batch: !!batch,
             anchorId: anchor?.id,
             existing: expansion ? this.graph : undefined,
             refresh: mode === "refresh",
@@ -569,13 +679,13 @@ export class AcademicTreeView {
                     ...(priorExpansion ? [priorExpansion] : []),
                   ]
                 : expansion
-                  ? failedBranches
+                  ? [...failedBranches, ...(batch || [])]
                   : undefined,
           };
     this.cancel(false);
     this.pending = operation;
     this.lastExpansion =
-      operation.expansion && operation.anchorId
+      !operation.batch && operation.expansion && operation.anchorId
         ? { id: operation.anchorId, direction: operation.expansion }
         : undefined;
     const controller = createAbortController();
@@ -612,12 +722,16 @@ export class AcademicTreeView {
       );
       if (!current()) return;
       const graph = await buildAcademicTree(profile, {
-        upDepth: operation.expansion
-          ? Number(operation.expansion === "up")
-          : Number(this.up.value),
-        downDepth: operation.expansion
-          ? Number(operation.expansion === "down")
-          : Number(this.down.value),
+        upDepth: operation.batch
+          ? 0
+          : operation.expansion
+            ? Number(operation.expansion === "up")
+            : Number(this.up.value),
+        downDepth: operation.batch
+          ? 0
+          : operation.expansion
+            ? Number(operation.expansion === "down")
+            : Number(this.down.value),
         maxNodes: this.limit,
         degreeFilter: this.degree.value as AcademicDegreeFilter,
         existing: operation.existing,
@@ -630,7 +744,7 @@ export class AcademicTreeView {
           if (!operation.expansion) this.root = profile;
           this.selected ||= graph.rootId;
           this.graph = graph;
-          this.canvas.render(graph, this.selected);
+          this.renderGraph();
           this.updateStatus(true);
         },
       });
@@ -657,7 +771,7 @@ export class AcademicTreeView {
       this.graph = graph;
       if (!graph.nodes.some((node) => node.id === this.selected))
         this.selected = graph.rootId;
-      this.canvas.render(graph, this.selected);
+      this.renderGraph();
       if (keepGraph && viewport) this.canvas.restoreViewport(viewport);
       this.updateStatus(false);
     } catch {
@@ -676,6 +790,26 @@ export class AcademicTreeView {
       }
     }
   }
+  private renderGraph() {
+    if (!this.graph) return;
+    const visible = this.tools.project(this.graph);
+    if (!visible.nodes.some((node) => node.id === this.selected)) {
+      this.selected = visible.rootId;
+      const node = visible.nodes.find((node) => node.id === this.selected);
+      if (node) {
+        this.select(node);
+        return;
+      }
+    }
+    this.tools.sync(this.graph, this.busy);
+    this.canvas.render(
+      visible,
+      this.selected,
+      academicPrimaryLineage(this.graph),
+      this.tools.state.sort || "name",
+    );
+    this.canvas.highlightPath(this.tools.state.path);
+  }
   private updateStatus(loading: boolean) {
     if (!this.graph) return;
     const parts = [
@@ -686,6 +820,13 @@ export class AcademicTreeView {
         },
       }),
     ];
+    const visible = this.tools.project(this.graph);
+    if (visible.nodes.length !== this.graph.nodes.length)
+      parts.push(
+        getString("academic-tree-visible-count", {
+          args: { count: visible.nodes.length },
+        }),
+      );
     if (loading) parts.push(getString("academic-tree-loading"));
     if (this.graph.failures.length)
       parts.push(
@@ -726,7 +867,11 @@ export class AcademicTreeView {
             other: "academic-tree-other",
             unknown: "academic-tree-unknown",
           }[degree];
-          return key ? getString(key as FluentMessageId) : degree;
+          const label = key ? getString(key as FluentMessageId) : degree;
+          const year = node.educationYears?.[degree];
+          return year === undefined
+            ? label
+            : `${label} — ${getString("academic-tree-education-year", { args: { year } })}`;
         });
         lines.push(`${mentor?.name} → ${node.name}: ${degrees.join(" / ")}`);
       }
@@ -743,7 +888,7 @@ export class AcademicTreeView {
     this.selected = node.id;
     this.details.textContent = this.describe(node);
     this.actions.replaceChildren();
-    if (this.graph) this.canvas.render(this.graph, this.selected);
+    if (this.graph) this.renderGraph();
     if (!node.recid || this.busy) return;
     const expandUp = this.button(
       "academic-tree-expand-up",
@@ -764,7 +909,10 @@ export class AcademicTreeView {
     this.actions.append(
       expandUp,
       expandDown,
-      this.button("academic-tree-reroot", () => void this.followName(node)),
+      this.button("academic-tree-reroot", () => {
+        if (node.id === this.graph?.rootId) this.canvas.center(node.id);
+        else void this.followName(node);
+      }),
       this.button("academic-tree-inspire", () =>
         Zotero.launchURL(`https://inspirehep.net/authors/${node.recid}`),
       ),
@@ -800,6 +948,13 @@ export class AcademicTreeView {
         this.status.textContent = getString("academic-tree-load-error");
     }
   }
+  closeMenus() {
+    this.searchHistory.close();
+    this.tools.closeMenus();
+  }
+  refreshAppearance() {
+    this.tools.refreshAppearance();
+  }
   cancel(showStatus = true) {
     this.authorPreview?.hide();
     const wasBusy = this.busy;
@@ -826,6 +981,8 @@ export class AcademicTreeView {
     this.cleanup = [];
     this.backStack = [];
     this.forwardStack = [];
+    this.tools.dispose();
+    this.searchHistory.dispose();
     this.authorPreview.dispose();
     this.canvas.dispose();
     this.element.remove();
