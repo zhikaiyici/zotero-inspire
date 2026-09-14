@@ -502,6 +502,7 @@ export {
   searchAcademicAuthors,
 } from "./academicTreeDataService";
 export { layoutAcademicTree } from "./academicTreeLayout";
+export { pageAcademicTree } from "./academicTreePageLayout";
 
 export {
   academicReachable,
