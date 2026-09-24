@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   buildAcademicTree,
   clampAcademicDepth,
+  matchesAcademicDegree,
 } from "../src/modules/inspire/academicTreeService";
 import { ACADEMIC_TREE_DEFAULT_DEPTH } from "../src/modules/inspire/academicTreeTypes";
 import type {
@@ -156,11 +157,14 @@ describe("academic tree traversal", () => {
       "Institute",
     );
   });
-  it("defaults to two generations and allows only 0–8", () => {
+  it("defaults to two generations and allows 0–10 ancestors and 0–8 descendants", () => {
     expect(ACADEMIC_TREE_DEFAULT_DEPTH).toBe(2);
-    expect([-3, 0, 2, 6, 8, 20, NaN].map(clampAcademicDepth)).toEqual([
-      0, 0, 2, 6, 8, 8, 2,
-    ]);
+    expect(
+      [-3, 0, 2, 6, 8, 10, 20, NaN].map((depth) =>
+        clampAcademicDepth(depth),
+      ),
+    ).toEqual([0, 0, 2, 6, 8, 10, 10, 2]);
+    expect([-3, 0, 2, 6, 8, 10, 20, NaN].map((depth) => clampAcademicDepth(depth, "down"))).toEqual([0, 0, 2, 6, 8, 8, 8, 2]);
   });
   it("honors independent zero, two and eight generation bounds", async () => {
     const profiles = Array.from({ length: 25 }, (_, i) =>
@@ -185,7 +189,7 @@ describe("academic tree traversal", () => {
       expect(graph.nodes.find((n) => n.id === "13")?.level).toBe(0);
     }
   });
-  it("prevents local expansion past eight generations, but allows tracing from a new root", async () => {
+  it("prevents local expansion past direction-specific limits, but allows tracing from a new root", async () => {
     const profiles = Array.from({ length: 25 }, (_, i) =>
       person(i + 1, i ? [advisor(i)] : []),
     );
@@ -197,9 +201,9 @@ describe("academic tree traversal", () => {
     });
     expect(
       initial.nodes.map((node) => Number(node.id)).sort((a, b) => a - b),
-    ).toEqual(Array.from({ length: 17 }, (_, i) => i + 5));
+    ).toEqual(Array.from({ length: 19 }, (_, i) => i + 3));
     for (const [id, direction] of [
-      [5, "up"],
+      [3, "up"],
       [21, "down"],
     ] as const) {
       vi.mocked(source.profile).mockClear();
@@ -223,9 +227,7 @@ describe("academic tree traversal", () => {
           (node) => node.id === String(id + (direction === "up" ? -1 : 1)),
         ),
       ).toBe(true);
-      expect(recentered.nodes.every((node) => Math.abs(node.level) <= 8)).toBe(
-        true,
-      );
+      expect(recentered.nodes.every((node) => node.level >= -10 && node.level <= 8)).toBe(true);
     }
   });
   it("preserves co-advisors and multiple degrees with one node per author", async () => {
@@ -272,6 +274,48 @@ describe("academic tree traversal", () => {
       degreeFilter: "phd",
     });
     expect(graph.nodes.map((n) => n.id).sort()).toEqual(["1", "3"]);
+  });
+  it("separates all six qualifications, Other and missing types during traversal", async () => {
+    const types = [
+      "phd",
+      "diploma",
+      "bachelor",
+      "master",
+      "habilitation",
+      "laurea",
+      "other",
+      undefined,
+    ] as const;
+    const profiles = [
+      person(1),
+      ...types.map((degreeType, i) =>
+        person(i + 2, [{ recid: "1", name: "Author 1", degreeType }]),
+      ),
+    ];
+    for (const [i, type] of types.entries()) {
+      const filter = type || "unknown";
+      const graph = await buildAcademicTree(profiles[0], {
+        ...opts(sourceFor(profiles)),
+        degreeFilter: filter,
+      });
+      expect(graph.nodes.map((n) => n.id).sort()).toEqual(
+        ["1", String(i + 2)].sort(),
+      );
+      expect(matchesAcademicDegree(type, "specified")).toBe(i < 6);
+    }
+    const specified = await buildAcademicTree(profiles[0], {
+      ...opts(sourceFor(profiles)),
+      degreeFilter: "specified",
+    });
+    expect(specified.nodes.map((n) => n.id).sort()).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+    ]);
   });
   it("deduplicates cyclic records and terminates eight-generation traversal", async () => {
     const profiles = [person(1, [advisor(2)]), person(2, [advisor(1)])];
@@ -398,7 +442,7 @@ describe("academic tree metadata and layout", () => {
       { name: "Public", recid: "4", degreeType: "master" },
     ]);
   });
-  it("places a co-advisor below their own mentors and keeps the other mentor close to the shared student", async () => {
+  it("keeps direct students in the first generation and retains their co-advisor links", async () => {
     const profiles = [
       { ...person(1), name: "Ulf-G. Meissner" },
       { ...person(2, [advisor(1), advisor(3)]), name: "Shared Student" },
@@ -422,8 +466,13 @@ describe("academic tree metadata and layout", () => {
     expect(Math.abs(node("3").x - node("4").x)).toBeLessThan(
       ACADEMIC_NODE_WIDTH + 24,
     );
-    for (const edge of graph.edges)
-      expect(node(edge.source).y).toBeLessThan(node(edge.target).y);
+    for (const edge of graph.edges) {
+      const sameGeneration = node(edge.source).y === node(edge.target).y;
+      expect(
+        node(edge.source).y < node(edge.target).y ||
+          (sameGeneration && edge.target === "2"),
+      ).toBe(true);
+    }
     expect(JSON.stringify(graph)).toBe(original);
     expect(layout.nodes.map((n) => [n.id, n.level]).sort()).toEqual(
       graph.nodes.map((n) => [n.id, n.level]).sort(),
@@ -600,5 +649,37 @@ describe("academic name labels", () => {
       "Alexandria",
       "Montgomery",
     ]);
+  });
+  it("keeps the first given name, initials later ones, and retains a long surname", () => {
+    const graph: AcademicTreeGraph = {
+      rootId: "sommerfeld",
+      nodes: [
+        {
+          id: "sommerfeld",
+          name: "Arnold Johannes Wilhelm Sommerfeld",
+          canonicalName: "Sommerfeld, Arnold Johannes Wilhelm",
+          level: 0,
+        },
+        {
+          id: "lindemann",
+          name: "Carl Louis Ferdinand von Lindemann",
+          canonicalName: "von Lindemann, Carl Louis Ferdinand",
+          level: -1,
+        },
+      ],
+      edges: [{ source: "lindemann", target: "sommerfeld", degreeTypes: [] }],
+      expanded: { up: [], down: [] },
+      empty: { up: [], down: [] },
+      failures: [],
+      limited: false,
+    };
+    const layout = layoutAcademicTree(graph, width);
+    expect(layout.nodes.find((node) => node.id === "sommerfeld")).toMatchObject({
+      displayName: "Arnold J. W. Sommerfeld",
+    });
+    expect(layout.nodes.find((node) => node.id === "lindemann")).toMatchObject({
+      displayName: "Carl L. F. von Lindemann",
+    });
+    expect(layout.nodes.every((node) => node.width <= 168)).toBe(true);
   });
 });

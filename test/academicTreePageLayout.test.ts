@@ -2,11 +2,51 @@ import { describe, expect, it } from "vitest";
 import { layoutAcademicTree } from "../src/modules/inspire/academicTreeLayout";
 import { pageAcademicTree } from "../src/modules/inspire/academicTreePageLayout";
 import { createAcademicRouter } from "../src/modules/inspire/academicTreeRouting";
+import { academicQualificationCards } from "../src/modules/inspire/academicTreeQualifications";
 import type { AcademicTreeGraph } from "../src/modules/inspire/academicTreeTypes";
 import fixture from "./fixtures/academic-tree-sorting.json";
 import expanded from "./fixtures/academic-tree-expanded.json";
 
 describe("academic page layout", () => {
+  it("keeps a direct student of the center in generation one despite a student co-advisor", () => {
+    const graph: AcademicTreeGraph = {
+      rootId: "ulf",
+      nodes: [
+        { id: "ulf", name: "Ulf", level: 0 },
+        { id: "feng", name: "Feng-Kun", level: 1 },
+        { id: "vonk", name: "Thomas Vonk", level: 1 },
+      ],
+      edges: [
+        ["ulf", "feng"],
+        ["ulf", "vonk"],
+        ["feng", "vonk"],
+      ].map(([source, target]) => ({ source, target, degreeTypes: ["phd"] })),
+      expanded: { up: [], down: [] },
+      empty: { up: [], down: [] },
+      failures: [],
+      limited: false,
+    };
+    const tree = layoutAcademicTree(graph);
+    for (const layout of [
+      tree,
+      pageAcademicTree(tree, graph.rootId, graph.edges, 640),
+    ]) {
+      const generation = (id: string) => {
+        const node = layout.nodes.find((candidate) => candidate.id === id)!;
+        return layout.rows!.find((row) => row.y === node.y)!.generation;
+      };
+      expect(generation("ulf")).toBe(0);
+      expect(generation("feng")).toBe(1);
+      expect(generation("vonk")).toBe(1);
+    }
+    const nodes = new Map(tree.nodes.map((node) => [node.id, node]));
+    expect(
+      createAcademicRouter(tree.nodes, graph.edges)(
+        nodes.get("feng")!,
+        nodes.get("vonk")!,
+      ),
+    ).not.toMatch(/NaN|Infinity/);
+  });
   it("keeps a shared student below mentors from two different generations in both layouts", () => {
     const graph: AcademicTreeGraph = {
       rootId: "b",
@@ -45,7 +85,12 @@ describe("academic page layout", () => {
   for (const graph of [fixture.graph, expanded.graph] as AcademicTreeGraph[])
     for (const sort of ["name", "year"] as const)
       it(`wraps ${graph.nodes.length} people sorted by ${sort} without shrinking, overlaps, or changed reading order`, () => {
-        const original = layoutAcademicTree(graph, undefined, sort);
+        const original = layoutAcademicTree(
+          graph,
+          undefined,
+          sort,
+          academicQualificationCards(graph, (degree) => degree),
+        );
         for (const width of [360, 640, 1024]) {
           const page = pageAcademicTree(
             original,

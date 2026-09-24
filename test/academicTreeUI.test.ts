@@ -285,7 +285,7 @@ describe("Academic Tree window interactions", () => {
       ...fixture.profiles[2],
       advisors: [
         ...fixture.profiles[2].advisors,
-        { name: "Co Advisor", recid: "4", degreeType: "master" },
+        { name: "Co Advisor", recid: "4", degreeType: "other" },
       ],
     };
     const profiles = [
@@ -309,8 +309,26 @@ describe("Academic Tree window interactions", () => {
     ).toBe("false");
     expect(doc.querySelector('[data-author-id="2"]')).not.toBeNull();
     expect(doc.querySelector('[data-author-id="4"]')).toBeNull();
+    const qualification = () =>
+      doc.querySelector('[data-author-id="3"] [data-qualifications]')!;
+    expect(qualification().getAttribute("data-qualifications")).toBe(
+      "academic-tree-master",
+    );
+    expect(qualification().querySelector("title")!.textContent).not.toContain(
+      "Co Advisor",
+    );
     click(button("academic-tree-co-advisors"));
     expect(doc.querySelector('[data-author-id="4"]')).not.toBeNull();
+    expect(qualification().getAttribute("data-qualifications")).toBe(
+      "academic-tree-master / academic-tree-other",
+    );
+    expect(qualification().querySelector("title")!.textContent).toContain(
+      "Co Advisor → Student Author: academic-tree-other",
+    );
+    click(button("academic-tree-co-advisors"));
+    expect(qualification().getAttribute("data-qualifications")).toBe(
+      "academic-tree-master",
+    );
   });
   it("remembers author searches across reopening, completes them and clears history", async () => {
     const prefs = new Map<string, unknown>();
@@ -816,8 +834,8 @@ describe("Academic Tree window interactions", () => {
         ?.getAttribute("visibility"),
     ).toBe("visible");
   });
-  it("disables expansion at eight generations and lets a boundary name become a new center", async () => {
-    const profiles = Array.from({ length: 19 }, (_, i) => ({
+  it("disables expansion at the direction-specific limits and lets a boundary name become a new center", async () => {
+    const profiles = Array.from({ length: 20 }, (_, i) => ({
       recid: String(i + 1),
       name: `Author ${i + 1}`,
       advisors: i
@@ -835,26 +853,26 @@ describe("Academic Tree window interactions", () => {
     });
     view = new AcademicTreeView(
       doc,
-      { recid: "10", fullName: "Author 10" },
+      { recid: "11", fullName: "Author 11" },
       vi.fn(),
     );
     doc.body.append(view.element);
-    await rootIs("10");
-    setSelect("academic-tree-up", "8");
+    await rootIs("11");
+    setSelect("academic-tree-up", "10");
     setSelect("academic-tree-down", "8");
-    await rootIs("10");
-    expect(nameElement("1")).toBeNull();
-    expect(nameElement("19")).toBeNull();
-    click(doc.querySelector('[data-author-id="2"] rect')!);
+    await rootIs("11");
+    expect(nameElement("1")).toBeTruthy();
+    expect(nameElement("19")).toBeTruthy();
+    click(doc.querySelector('[data-author-id="1"] rect')!);
     expect(button("academic-tree-expand-up").disabled).toBe(true);
-    click(doc.querySelector('[data-author-id="18"] rect')!);
+    click(doc.querySelector('[data-author-id="19"] rect')!);
     expect(button("academic-tree-expand-down").disabled).toBe(true);
     expect(button("academic-tree-expand-down").title).toBe(
       "academic-tree-depth-limit",
     );
-    click(nameElement("18"));
-    await rootIs("18");
-    expect(nameElement("19")).toBeTruthy();
+    click(nameElement("19"));
+    await rootIs("19");
+    expect(nameElement("20")).toBeTruthy();
   });
   it("dismisses search candidates when choosing the current author without adding a history visit", async () => {
     const sidebar = open();
@@ -1059,18 +1077,21 @@ describe("Academic Tree window interactions", () => {
     expect(button("academic-tree-back").disabled).toBe(true);
     expect(button("academic-tree-forward").disabled).toBe(false);
   });
-  it("shares citation graph chrome, defaults both controls to two, and offers 0–8", async () => {
+  it("shares citation graph chrome, defaults both controls to two, and offers their direction-specific limits", async () => {
     open();
     await vi.waitFor(() => expect(nameElement("2")).toBeTruthy());
     await waitLoaded();
     expect(doc.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-    for (const label of ["academic-tree-up", "academic-tree-down"]) {
+    for (const [label, maximum] of [
+      ["academic-tree-up", 10],
+      ["academic-tree-down", 8],
+    ]) {
       const select = doc.querySelector<HTMLSelectElement>(
         `select[aria-label="${label}"]`,
       )!;
       expect(select.value).toBe("2");
       expect([...select.options].map((o) => o.value)).toEqual(
-        Array.from({ length: 9 }, (_, i) => String(i)),
+        Array.from({ length: maximum + 1 }, (_, i) => String(i)),
       );
     }
     click(button("references-panel-citation-graph-title"));
@@ -1281,6 +1302,7 @@ it("exports the requested format and scope using the menu and shared native save
     expect(exported.documentElement.getAttribute("data-layout-mode")).toBe(
       "page",
     );
+    expect(exported.querySelector("[data-qualifications]")).not.toBeNull();
     expect(
       exported.querySelectorAll("[data-generation]").length,
     ).toBeGreaterThan(0);

@@ -5,9 +5,16 @@ import {
   packPinnedAcademicRow as packPinnedRow,
 } from "./academicTreePacking";
 import { academicNodeOrder } from "./academicTreeSorting";
+import {
+  wrapAcademicQualifications,
+  type AcademicQualificationCard,
+} from "./academicTreeQualifications";
+import { buildInitials, formatAuthorName } from "./formatters";
 import type { AcademicTreeGraph, AcademicTreeNode } from "./academicTreeTypes";
 
 export interface AcademicLayoutNode extends AcademicTreeNode {
+  displayName?: string;
+  qualificationLines?: string[];
   x: number;
   y: number;
   width: number;
@@ -26,6 +33,7 @@ export interface AcademicTreeLayout {
   }>;
 }
 export const ACADEMIC_NODE_WIDTH = 144;
+const ACADEMIC_COMPACT_NODE_WIDTH = 168;
 export const ACADEMIC_NODE_HEIGHT = 55;
 const COLUMN_STEP = ACADEMIC_NODE_WIDTH + 18;
 
@@ -66,6 +74,46 @@ export function wrapAcademicName(
     while (rest[0] === " ") rest.shift();
   }
   return lines;
+}
+
+/** Prefer a readable compact name over hiding the end of a long surname. */
+function fitAcademicName(
+  node: AcademicTreeNode,
+  measure: (text: string) => number,
+): { displayName?: string; width: number; lines: string[] } {
+  const fullName = node.name.trim().replace(/\s+/g, " ");
+  const baseWidth = Math.max(
+    100,
+    Math.min(ACADEMIC_NODE_WIDTH, measure(fullName) + 20),
+  );
+  const fullLines = wrapAcademicName(fullName, measure, baseWidth - 20);
+  if (!fullLines.at(-1)?.endsWith("…"))
+    return { width: baseWidth, lines: fullLines };
+
+  const compactName = formatAuthorName(node.canonicalName || fullName, false);
+  if (!compactName || compactName === fullName)
+    return { width: baseWidth, lines: fullLines };
+  const firstName = fullName.split(" ")[0] || "";
+  const firstInitials = buildInitials(firstName);
+  // The first given name helps recognition most. Keep it when the resulting
+  // label still fits; only later given names need to become initials.
+  const candidates = [
+    firstInitials && compactName.startsWith(firstInitials)
+      ? `${firstName}${compactName.slice(firstInitials.length)}`.trim()
+      : "",
+    compactName,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const width = Math.max(
+      baseWidth,
+      Math.min(ACADEMIC_COMPACT_NODE_WIDTH, measure(candidate) + 20),
+    );
+    const lines = wrapAcademicName(candidate, measure, width - 20);
+    if (!lines.at(-1)?.endsWith("…"))
+      return { displayName: candidate, width, lines };
+  }
+  return { width: baseWidth, lines: fullLines };
 }
 
 /** Count edge crossings in O(E log E), excluding shared endpoints. */
@@ -157,10 +205,29 @@ function displayRanks(graph: AcademicTreeGraph): Map<string, number> {
   }
   const root = componentOf.get(graph.rootId);
   const offset = root === undefined ? 0 : rank[root];
+  // A direct student of the focal author belongs to generation +1 even when a
+  // second advisor is another visible student. Longest-path ranking would put
+  // that student below the second advisor instead. Use the shortest directed
+  // path from the focal component for descendants; retain the established
+  // global ranks for ancestors and lateral branches of their advisors.
+  const descendantDistance = new Map<number, number>();
+  if (root !== undefined) {
+    descendantDistance.set(root, 0);
+    const descendants = [root];
+    for (let cursor = 0; cursor < descendants.length; cursor++) {
+      const from = descendants[cursor];
+      for (const to of next[from])
+        if (!descendantDistance.has(to)) {
+          descendantDistance.set(to, descendantDistance.get(from)! + 1);
+          descendants.push(to);
+        }
+    }
+  }
   return new Map(
     graph.nodes.map((node) => [
       node.id,
-      rank[componentOf.get(node.id)!] - offset,
+      descendantDistance.get(componentOf.get(node.id)!) ??
+        rank[componentOf.get(node.id)!] - offset,
     ]),
   );
 }
@@ -170,21 +237,33 @@ export function layoutAcademicTree(
   graph: AcademicTreeGraph,
   measure: (text: string) => number = (text) => Array.from(text).length * 7,
   sort: import("./academicTreeTypes").AcademicSortMode = "name",
+  qualifications?: Map<string, AcademicQualificationCard>,
 ): AcademicTreeLayout {
   const layers = new Map<number, AcademicTreeNode[]>();
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
   const ranks = displayRanks(graph);
   const dimensions = new Map(
     graph.nodes.map((node) => {
-      const width = Math.max(
-        100,
-        Math.min(ACADEMIC_NODE_WIDTH, measure(node.name) + 20),
+      const name = fitAcademicName(node, measure);
+      const width = name.width;
+      const lines = name.lines.length || 1;
+      const qualificationLines = wrapAcademicQualifications(
+        qualifications?.get(node.id)?.labels || [],
+        (text) => (measure(text) * 10) / 13,
+        width - 20,
       );
-      const lines =
-        wrapAcademicName(node.name, measure, width - 20).length || 1;
       return [
         node.id,
-        { width, height: lines * 16 + (node.institution ? 11 : 0) + 12 },
+        {
+          width,
+          height:
+            lines * 16 +
+            (node.institution ? 11 : 0) +
+            qualificationLines.length * 12 +
+            12,
+          ...(name.displayName ? { displayName: name.displayName } : {}),
+          ...(qualificationLines.length ? { qualificationLines } : {}),
+        },
       ];
     }),
   );
