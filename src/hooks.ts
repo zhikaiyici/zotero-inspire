@@ -7,16 +7,11 @@ import {
   getReaderIntegration,
   recidLookupCache,
   MemoryMonitor,
-  findUnpublishedPreprints,
-  batchCheckPublicationStatus,
-  buildCheckSummary,
-  shouldRunBackgroundCheck,
-  updateLastCheckTime,
-  trackPreprintCandidates,
-  cleanupLegacyPreprintFiles,
-  createAbortController,
+  runBackgroundCheck,
+  stopBackgroundCheck,
   onRenderModeChange,
   deriveRecidFromItem,
+  forgetRecidLookup,
   clearFundingCache,
   registerInspireItemTreeColumns,
   unregisterInspireItemTreeColumns,
@@ -29,6 +24,15 @@ import {
 } from "./modules/inspire/enrichConfig";
 import { getPref, setPref } from "./utils/prefs";
 import { registerPrefsScripts } from "./modules/prefScript";
+import { takeCreatedByPluginMark } from "./modules/inspire/library/itemCreation";
+import { addArxivPapers } from "./modules/arxiv/addToLibrary";
+import { attachArxivPdf } from "./modules/arxiv/arxivPdf";
+import { lookupInspireByArxiv } from "./modules/arxiv/inspireByArxiv";
+import {
+  checkInspireCompletion,
+  findCompletionCandidates,
+  writeInspireCompletion,
+} from "./modules/inspire/library/inspireCompletion";
 import {
   getExternalToken,
   ensureExternalToken,
@@ -47,11 +51,25 @@ import {
   registerZInspireBibtexEndpoint,
   unregisterZInspireBibtexEndpoint,
 } from "./modules/connectorInspireBibtexApi";
+import { stopLibraryIndex } from "./modules/inspire/library/arxivIndex";
+import {
+  closeArxivBrowser,
+  onArxivBrowserLoad,
+  onArxivBrowserUnload,
+  openArxivBrowser,
+} from "./modules/arxiv/browser/browserWindow";
+import {
+  addArxivBrowserButton,
+  registerArxivBrowserMenu,
+  removeArxivBrowserButton,
+  unregisterArxivBrowserMenu,
+} from "./modules/arxiv/browser/browserEntryPoints";
+import { initArxivBrowserPrefs } from "./modules/arxiv/browser/browserPrefs";
+import { paintTimes } from "./modules/arxiv/browser/paintTimes";
 
 // Track background timers for cleanup on shutdown (PERF-FIX-1)
 let purgeTimer: ReturnType<typeof setTimeout> | undefined;
 let preprintCheckTimer: ReturnType<typeof setTimeout> | undefined;
-let preprintCheckController: AbortController | undefined;
 let itemTreePrefsObserverID: symbol | undefined;
 
 async function onStartup() {
@@ -64,6 +82,7 @@ async function onStartup() {
 
   ZInsUtils.registerPrefs();
   ZInsUtils.registerNotifier();
+  registerArxivBrowserMenu(openArxivBrowser);
 
   // One-time migration: the legacy china-only boolean (FTR-FUNDING-EXTRACTION)
   // is superseded by funding_filter_mode. funding_filter_mode has a default of
@@ -79,6 +98,8 @@ async function onStartup() {
   }
 
   await onMainWindowLoad(Zotero.getMainWindow());
+
+  if (getPref("arxiv_browser_open_on_startup")) openArxivBrowser();
 
   // Register LRU caches for monitoring
   MemoryMonitor.getInstance().registerCache("recidLookup", recidLookupCache);
@@ -126,76 +147,33 @@ function exposeConsoleCommands(): void {
       MemoryMonitor.getInstance().start(interval);
     instance.stopMemoryMonitor = () => MemoryMonitor.getInstance().stop();
     instance.getExternalToken = () => getExternalToken();
+    // How long the arXiv browser took to show its last pages
+    instance.arxivBrowserPaintTimes = () => paintTimes();
     instance.getExternalReadToken = () => getExternalReadToken();
+    // Adding arXiv papers and INSPIRE completion, for checks until the arXiv
+    // browser window has its buttons, e.g. in Run JavaScript:
+    //   await Zotero.ZoteroInspire.arxiv.addPapers(
+    //     [{ arxivId: "2609.28544" }],
+    //     { libraryID: 1, collectionIDs: [] }, { attachPdf: true })
+    instance.arxiv = {
+      addPapers: addArxivPapers,
+      attachPdf: attachArxivPdf,
+      lookupInspire: lookupInspireByArxiv,
+      completionCandidates: findCompletionCandidates,
+      checkCompletion: checkInspireCompletion,
+      writeCompletion: writeInspireCompletion,
+    };
   }
 }
 
 /**
  * FTR-PREPRINT-WATCH: Run background preprint check based on preferences.
- * Non-interactive, only shows notification if publications found.
+ * Non-interactive, only shows the results dialog if publications found.
  */
 async function runBackgroundPreprintCheck(): Promise<void> {
-  // Abort previous background check if still running
-  preprintCheckController?.abort();
-  preprintCheckController = createAbortController();
-  const signal = preprintCheckController?.signal;
-
-  try {
-    // Check if preprint watch is enabled
-    const enabled = getPref("preprint_watch_enabled" as any) as boolean;
-    if (!enabled) {
-      Zotero.debug(
-        `[${config.addonName}] Preprint watch disabled, skipping background check`,
-      );
-      return;
-    }
-
-    // Check if we should run based on timing preference
-    if (!shouldRunBackgroundCheck()) {
-      return;
-    }
-
-    Zotero.debug(`[${config.addonName}] Starting background preprint check`);
-
-    // Update last check time
-    updateLastCheckTime();
-
-    // Find unpublished preprints in library
-    const preprints = await findUnpublishedPreprints(undefined, undefined, {
-      signal,
-    });
-    if (signal?.aborted) return;
-    if (preprints.length === 0) {
-      Zotero.debug(
-        `[${config.addonName}] No unpublished preprints found in library`,
-      );
-      return;
-    }
-
-    Zotero.debug(
-      `[${config.addonName}] Found ${preprints.length} unpublished preprints, checking INSPIRE...`,
-    );
-
-    // Check publication status (updates unified cache internally)
-    const results = await batchCheckPublicationStatus(preprints, { signal });
-    if (signal?.aborted) return;
-    const summary = buildCheckSummary(results);
-
-    // If publications found, show results dialog for user to review and update
-    if (summary.published > 0) {
-      // Show results dialog through ZInspire instance
-      // This allows user to select which items to update
-      await _globalThis.inspire.showBackgroundPreprintResults(results);
-    }
-
-    Zotero.debug(
-      `[${config.addonName}] Background preprint check completed: ${summary.published} published, ${summary.unpublished} unpublished, ${summary.errors} errors`,
-    );
-  } catch (err) {
-    Zotero.debug(
-      `[${config.addonName}] Background preprint check failed: ${err}`,
-    );
-  }
+  await runBackgroundCheck((results) =>
+    _globalThis.inspire.showBackgroundPreprintResults(results),
+  );
 }
 
 async function onMainWindowLoad(_win: Window): Promise<void> {
@@ -206,6 +184,7 @@ async function onMainWindowLoad(_win: Window): Promise<void> {
 
   ZInsMenu.registerRightClickMenuPopup();
   ZInsMenu.registerRightClickCollectionMenu();
+  addArxivBrowserButton(_win, openArxivBrowser);
 
   // FTR-PDF-ANNOTATE: Initialize Reader integration for citation detection
   getReaderIntegration().initialize();
@@ -233,11 +212,20 @@ async function onMainWindowLoad(_win: Window): Promise<void> {
 }
 
 async function onMainWindowUnload(_win: Window): Promise<void> {
+  // The browser relies on the main window (library, related items)
+  closeArxivBrowser();
+  removeArxivBrowserButton(_win);
   ztoolkit.unregisterAll();
   addon.data.dialog?.window?.close();
 }
 
 function onShutdown(): void {
+  // Before the plugin's chrome:// files are unregistered
+  closeArxivBrowser();
+  unregisterArxivBrowserMenu();
+  for (const win of Zotero.getMainWindows()) {
+    removeArxivBrowserButton(win);
+  }
   unregisterZInspireBibtexEndpoint();
   unregisterZInspirePickSaveTargetEndpoint();
   unregisterZInspireWriteEndpoint();
@@ -251,8 +239,8 @@ function onShutdown(): void {
     clearTimeout(preprintCheckTimer);
     preprintCheckTimer = undefined;
   }
-  preprintCheckController?.abort();
-  preprintCheckController = undefined;
+  stopBackgroundCheck();
+  stopLibraryIndex();
 
   // PERF-FIX-2: Stop MemoryMonitor interval if running
   MemoryMonitor.getInstance().stop();
@@ -305,19 +293,15 @@ async function onNotify(
       return;
     }
 
-    // Track potential preprint candidates to avoid full-library rescans later
-    trackPreprintCandidates(regularItems).catch((err) => {
-      Zotero.debug(
-        `[${config.addonName}] Failed to track preprint candidates: ${err}`,
-      );
-    });
-
     // FIX-DUPLICATE-NOTE: Skip items that already have an INSPIRE recid
     // These were just imported from INSPIRE panel and don't need auto-update
     // This prevents duplicate note creation due to race condition between
     // panel import and onNotify auto-update
+    // Items the plugin created are skipped too (an arXiv paper added from
+    // arXiv data has no recid on purpose); their mark is removed here
     const itemsNeedingUpdate = regularItems.filter(
-      (item: Zotero.Item) => !deriveRecidFromItem(item),
+      (item: Zotero.Item) =>
+        !takeCreatedByPluginMark(item) && !deriveRecidFromItem(item),
     );
     if (itemsNeedingUpdate.length === 0) {
       return;
@@ -335,6 +319,16 @@ async function onNotify(
         break;
       default:
         break;
+    }
+  }
+
+  // A recid found on INSPIRE for an item without one was found by the item's
+  // identifiers; once the item changes, it is looked up again
+  if (event === "modify" || event === "delete") {
+    for (const id of ids) {
+      if (typeof id === "number") {
+        forgetRecidLookup(id);
+      }
     }
   }
 
@@ -759,6 +753,7 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
   switch (type) {
     case "load":
       registerPrefsScripts(data.window);
+      initArxivBrowserPrefs(data.window.document);
       // Update cache stats and directory display
       if (data.window) {
         const doc = data.window.document;
@@ -1022,6 +1017,15 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
   }
 }
 
+/** Events of the arXiv browser window (arxivBrowser.xhtml) */
+function onArxivBrowserEvent(
+  type: "load" | "unload",
+  data: { window: Window },
+) {
+  if (type === "load") onArxivBrowserLoad(data.window);
+  else onArxivBrowserUnload(data.window);
+}
+
 export default {
   onStartup,
   onShutdown,
@@ -1029,4 +1033,5 @@ export default {
   onMainWindowUnload,
   onNotify,
   onPrefsEvent,
+  onArxivBrowserEvent,
 };

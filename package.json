@@ -1,7 +1,7 @@
 {
   "name": "zotero-inspire",
-  "version": "3.2.5",
-  "description": "Bridge between Zotero and INSPIRE for high energy physics and related fields",
+  "version": "4.0.0",
+  "description": "Zotero plugin with a Zotero-tailored arXiv browser and deep integration of INSPIRE-HEP",
   "config": {
     "addonName": "zotero-inspire",
     "addonID": "zoteroinspire@itp.ac.cn",
@@ -54,7 +54,7 @@
     "typescript-eslint": "^8.19.0",
     "vitest": "^4.0.15",
     "zotero-plugin-scaffold": "^0.8.2",
-    "zotero-types": "^4.0.5"
+    "zotero-types": "^4.1.3"
   },
   "prettier": {
     "printWidth": 80,

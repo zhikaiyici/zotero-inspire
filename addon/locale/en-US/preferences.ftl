@@ -102,7 +102,10 @@ pref-reader-auto-reopen =
 pref-reader-auto-reopen-desc = When enabled, if the reader tab was closed, it will be reopened automatically when using Back or Forward navigation.
 pref-auto-find-fulltext =
     .label = Auto "Find Full Text" after adding to library
-pref-auto-find-fulltext-desc = When you add a reference to your library from the panel, automatically run Zotero's Find Full Text on the new item to fetch its PDF (single-item adds only, not batch import).
+pref-auto-find-fulltext-desc = When you add a reference to your library from the panel, automatically run Zotero's Find Full Text on the new item to fetch its PDF (single-item adds only, not the panel's batch import). When on, papers added from the arXiv browser, singly or in batches, get the arXiv PDF instead.
+pref-arxiv-pdf-skip-journal =
+    .label = No arXiv PDF for journal articles added from the arXiv browser
+pref-arxiv-pdf-skip-journal-desc = With the option above on, a paper the arXiv browser adds as a journal article (from INSPIRE or by its DOI) gets no arXiv preprint PDF; use Zotero's Find Available PDF for the journal version. Preprints still get theirs.
 
 pref-nofound-enable =
     .label = Add tag to items without INSPIRE record
@@ -202,5 +205,24 @@ pref-dev = Developer
 pref-dev-panel-layout =
     .label = Enable panel layout debug (Citing…)
 pref-dev-panel-layout-desc = Logs [PANEL-LAYOUT] lines and shows a "Copy layout" button in the panel header (for debugging).
+
+pref-arxiv-browser = arXiv Browser
+pref-arxiv-browser-default-subscription = Opens with the subscription:
+pref-arxiv-browser-first-subscription =
+    .label = The first one
+pref-arxiv-browser-no-subscription = No subscription yet: make one in the arXiv browser (View → arXiv Browser).
+pref-arxiv-browser-open-days = Opens with:
+pref-arxiv-browser-open-newest =
+    .label = The newest day
+pref-arxiv-browser-open-recent =
+    .label = The last 5 announcement days
+pref-arxiv-browser-open-week =
+    .label = This week
+pref-arxiv-browser-abstracts =
+    .label = Show the abstracts in the list (the chosen paper's abstract is always in the detail pane)
+pref-arxiv-browser-page-size = Papers per page:
+pref-arxiv-browser-page-size-desc = From 10 to 500; the list can also change it.
+pref-arxiv-browser-open-on-startup =
+    .label = Open the arXiv browser when Zotero starts
 
 pref-help = { $name } Build { $version } { $time }

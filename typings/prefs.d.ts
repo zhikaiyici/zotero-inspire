@@ -19,6 +19,7 @@ declare namespace _ZoteroTypes {
       "max_authors": number;
       "reader_auto_reopen": boolean;
       "auto_find_fulltext_on_import": boolean;
+      "arxiv_pdf_skip_journal_items": boolean;
       "chart_enable": boolean;
       "chart_default_collapsed": boolean;
       "related_papers_enable": boolean;
@@ -65,6 +66,13 @@ declare namespace _ZoteroTypes {
       "favorite_authors": string;
       "favorite_papers": string;
       "favorite_presentations": string;
+      "arxiv_subscriptions": string;
+      "arxiv_browser_default_subscription": string;
+      "arxiv_browser_open_days": string;
+      "arxiv_browser_page_size": number;
+      "arxiv_browser_abstracts_expanded": boolean;
+      "arxiv_browser_open_on_startup": boolean;
+      "arxiv_browser_list_share": number;
     };
   }
 }

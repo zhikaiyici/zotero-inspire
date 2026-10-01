@@ -21,18 +21,19 @@ import { searchCNKI } from "./services/cnki"
 import { crossrefFetch } from "./crossrefService";
 import { LRUCache } from "./utils";
 import { localCache } from "./localCache";
+import { arxivIdsFromFields } from "../arxiv/arxivId";
+import {
+  recidFromArchiveLocation,
+  recidFromLinkText,
+} from "./library/itemRecid";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RegExp Constants (hoisted to module level for performance)
 // ─────────────────────────────────────────────────────────────────────────────
 const ARXIV_REGEX = /arxiv/i;
-const ARXIV_ID_REGEX = /(arXiv:|_eprint:)(.+)/;
-const ARXIV_URL_REGEX =
-  /(?:arxiv.org[/]abs[/]|arXiv:)([a-z.-]+[/]\d+|\d+[.]\d+)/i;
-const RECID_FROM_URL_REGEX = /[^/]*$/;
 const DOI_IN_EXTRA_REGEX = /DOI:(.+)/i;
 const DOI_ORG_IN_EXTRA_REGEX = /doi\.org\/(.+)/i;
-const URL_IDENTIFIER_REGEX = /(doi|arxiv|\/literature\/)/i;
+const URL_IDENTIFIER_REGEX = /(doi|arxiv|\/literature\/|\/record\/)/i;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Identifier Extraction (FTR-REFACTOR: Extracted for clarity)
@@ -46,7 +47,9 @@ interface ExtractedIdentifier {
 
 /**
  * Extract identifier (DOI, arXiv, or recid) from a Zotero item.
- * Checks multiple fields: DOI, URL, Extra, archiveLocation.
+ * Checks the DOI field, Extra (arXiv ID, DOI, citation key), the URL (arXiv
+ * ID, DOI, recid) and Archive Location (recid). Recids are read by the rules
+ * of resolveItemRecid (library/itemRecid.ts), which does not read Extra.
  *
  * @param item - Zotero item to extract identifier from
  * @returns Extracted identifier info, or null if not found
@@ -65,21 +68,17 @@ function extractIdentifierFromItem(
   }
 
   // arXiv from Extra field
-  if (extra.includes("arXiv:") || extra.includes("_eprint:")) {
-    const match = extra.match(ARXIV_ID_REGEX);
-    if (match) {
-      const arxivSplit = match[2].split(" ");
-      const arxivId = arxivSplit[0] === "" ? arxivSplit[1] : arxivSplit[0];
-      return { idtype: "arxiv", value: arxivId, searchOrNot: 0 };
-    }
+  const extraArxivId = arxivIdsFromFields({ extra })[0];
+  if (extraArxivId) {
+    return { idtype: "arxiv", value: extraArxivId, searchOrNot: 0 };
   }
 
   // Check URL for various identifiers
   if (URL_IDENTIFIER_REGEX.test(url)) {
     // arXiv from URL
-    const arxivUrlMatch = ARXIV_URL_REGEX.exec(url);
-    if (arxivUrlMatch) {
-      return { idtype: "arxiv", value: arxivUrlMatch[1], searchOrNot: 0 };
+    const urlArxivId = arxivIdsFromFields({ url })[0];
+    if (urlArxivId) {
+      return { idtype: "arxiv", value: urlArxivId, searchOrNot: 0 };
     }
 
     // DOI from URL
@@ -88,12 +87,10 @@ function extractIdentifierFromItem(
       return { idtype: "doi", value: cleanDoi, searchOrNot: 0 };
     }
 
-    // Literature recid from URL
-    if (url.includes("/literature/")) {
-      const recidMatch = RECID_FROM_URL_REGEX.exec(url);
-      if (recidMatch?.[0]?.match(/^\d+/)) {
-        return { idtype: "literature", value: recidMatch[0], searchOrNot: 0 };
-      }
+    // Literature recid from an INSPIRE URL
+    const urlRecid = recidFromLinkText(url);
+    if (urlRecid) {
+      return { idtype: "literature", value: urlRecid, searchOrNot: 0 };
     }
   }
 
@@ -108,9 +105,12 @@ function extractIdentifierFromItem(
     return { idtype: "doi", value: doiOrgInExtra[1], searchOrNot: 0 };
   }
 
-  // Recid from archiveLocation
-  const recid = item.getField("archiveLocation") as string;
-  if (recid?.match(/^\d+/)) {
+  // Recid from Archive Location (with Archive INSPIRE)
+  const recid = recidFromArchiveLocation(
+    item.getField("archiveLocation") as string,
+    item.getField("archive") as string,
+  );
+  if (recid) {
     return { idtype: "literature", value: recid, searchOrNot: 0 };
   }
 
@@ -126,14 +126,40 @@ function extractIdentifierFromItem(
 // INSPIRE Metadata Fetching
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * What INSPIRE said about an item: its record; that it has none (no
+ * identifier to ask with, 404, or a search without exactly one hit); or
+ * nothing usable, because the request failed (cancelled, no network, server
+ * error, an answer that broke off) or the record could not be read.
+ */
+export type InspireMetaLookup =
+  | { kind: "found"; meta: jsobject }
+  | { kind: "notFound" }
+  | { kind: "failed"; aborted: boolean };
+
+const NOT_FOUND: InspireMetaLookup = { kind: "notFound" };
+
+/**
+ * INSPIRE metadata of an item, or -1 when there is none or the request
+ * failed. Use lookupInspireMeta to tell the two apart.
+ */
 export async function getInspireMeta(
   item: Zotero.Item,
   operation: string,
   signal?: AbortSignal,
 ): Promise<jsobject | -1> {
+  const lookup = await lookupInspireMeta(item, operation, signal);
+  return lookup.kind === "found" ? lookup.meta : -1;
+}
+
+export async function lookupInspireMeta(
+  item: Zotero.Item,
+  operation: string,
+  signal?: AbortSignal,
+): Promise<InspireMetaLookup> {
   const identifier = extractIdentifierFromItem(item);
   if (!identifier) {
-    return -1;
+    return NOT_FOUND;
   }
 
   const { idtype, value: doi, searchOrNot } = identifier;
@@ -162,44 +188,62 @@ export async function getInspireMeta(
     const citekeyMatch = extra.match(/^.*Citation\sKey:\s*(.+)$/m);
     const citekey = citekeyMatch?.[1]?.trim();
     if (!citekey) {
-      return -1;
+      return NOT_FOUND;
     }
     urlInspire = `${INSPIRE_API_BASE}/literature?q=texkey%20${encodeURIComponent(citekey)}${fieldsParam}`;
   }
 
   if (!urlInspire) {
-    return -1;
+    return NOT_FOUND;
   }
 
-  let status: number | null = null;
-  const response = (await inspireFetch(urlInspire, { signal })
-    .then((response) => {
-      if (response.status !== 404) {
-        status = 1;
-        return response.json();
-      }
-    })
-    .catch((_err) => null)) as any;
-
-  if (status === null) {
-    return -1;
+  let response: any;
+  try {
+    const answer = await inspireFetch(urlInspire, { signal });
+    if (answer.status === 404) {
+      return NOT_FOUND;
+    }
+    // Overloaded or failing server: no statement about the record
+    if (
+      answer.status === 408 ||
+      answer.status === 429 ||
+      answer.status >= 500
+    ) {
+      Zotero.debug(
+        `[${config.addonName}] INSPIRE answered ${answer.status} for ${urlInspire}`,
+      );
+      return { kind: "failed", aborted: false };
+    }
+    response = await answer.json();
+  } catch (err) {
+    const aborted = (err as { name?: unknown } | null)?.name === "AbortError";
+    if (!aborted) {
+      Zotero.debug(
+        `[${config.addonName}] INSPIRE request failed for ${urlInspire}: ${err}`,
+      );
+    }
+    return { kind: "failed", aborted };
   }
 
   const t1 = performance.now();
   Zotero.debug(`Fetching INSPIRE meta took ${t1 - t0} milliseconds.`);
 
+  let meta: any;
   try {
-    const meta = (() => {
-      if (searchOrNot === 0) {
-        return response["metadata"];
-      } else {
-        const hits = response["hits"].hits;
-        if (hits.length === 1) return hits[0].metadata;
-      }
-    })();
-    if (!meta) {
-      return -1;
+    if (searchOrNot === 0) {
+      meta = response["metadata"];
+    } else {
+      const hits = response["hits"].hits;
+      if (hits.length === 1) meta = hits[0].metadata;
     }
+  } catch (err) {
+    return NOT_FOUND;
+  }
+  if (!meta) {
+    return NOT_FOUND;
+  }
+
+  try {
     const assignStart = performance.now();
     const metaInspire = buildMetaFromMetadata(meta, operation);
     if (operation !== "citations") {
@@ -208,9 +252,32 @@ export async function getInspireMeta(
         `Assigning meta took ${assignEnd - assignStart} milliseconds.`,
       );
     }
-    return metaInspire;
+    return { kind: "found", meta: metaInspire };
   } catch (err) {
-    return -1;
+    // INSPIRE has the record; it could not be read here
+    Zotero.debug(
+      `[${config.addonName}] Could not read the INSPIRE record from ${urlInspire}: ${err}`,
+    );
+    return { kind: "failed", aborted: false };
+  }
+}
+
+/**
+ * Items whose recid is being asked for on INSPIRE: how many lookups are
+ * under way, and how often the item changed since the first began
+ */
+const lookupsUnderWay = new Map<number, { count: number; changes: number }>();
+
+/**
+ * The item changed (its identifiers may have): forget the recid found on
+ * INSPIRE for it, and do not keep one that a lookup under way finds with
+ * the item's old identifiers
+ */
+export function forgetRecidLookup(itemID: number): void {
+  recidLookupCache.delete(itemID);
+  const underWay = lookupsUnderWay.get(itemID);
+  if (underWay) {
+    underWay.changes++;
   }
 }
 
@@ -240,18 +307,38 @@ export async function fetchRecidFromInspire(
     return cached;
   }
 
-  const meta = (await getInspireMeta(item, "literatureLookup", signal)) as
-    | jsobject
-    | -1;
-  if (meta === -1 || typeof meta !== "object") {
-    return null;
+  let underWay = lookupsUnderWay.get(item.id);
+  if (!underWay) {
+    underWay = { count: 0, changes: 0 };
+    lookupsUnderWay.set(item.id, underWay);
   }
-  // FIX: INSPIRE API returns recid as number, convert to string
-  const recid = meta.recid != null ? String(meta.recid) : null;
-  if (recid) {
-    recidLookupCache.set(item.id, recid);
+  underWay.count++;
+  try {
+    // An item edited while INSPIRE answers is asked for again, by its new
+    // identifiers
+    for (;;) {
+      const changes = underWay.changes;
+      const meta = (await getInspireMeta(item, "literatureLookup", signal)) as
+        | jsobject
+        | -1;
+      if (underWay.changes !== changes && !signal?.aborted) {
+        continue;
+      }
+      if (meta === -1 || typeof meta !== "object") {
+        return null;
+      }
+      // FIX: INSPIRE API returns recid as number, convert to string
+      const recid = meta.recid != null ? String(meta.recid) : null;
+      if (recid) {
+        recidLookupCache.set(item.id, recid);
+      }
+      return recid;
+    }
+  } finally {
+    if (--underWay.count === 0) {
+      lookupsUnderWay.delete(item.id);
+    }
   }
-  return recid;
 }
 
 export async function fetchInspireMetaByRecid(

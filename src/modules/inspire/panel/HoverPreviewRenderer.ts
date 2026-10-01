@@ -40,6 +40,7 @@ import {
   applyRefEntryMarkerColor,
   applyRefEntryMarkerStyle,
 } from "../../pickerUI";
+import { localItemCount, localItemsList } from "./localMarker";
 
 // XHTML namespace for proper element creation in Zotero (FIX-NAMESPACE-WARNING)
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
@@ -47,6 +48,19 @@ const XHTML_NS = "http://www.w3.org/1999/xhtml";
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Which of a paper's actions the card offers, per paper. Each one left out is
+ * the References panel's choice, by the paper's INSPIRE record.
+ */
+export interface PreviewEntryOptions {
+  /** Add to the library (References panel: the paper has an INSPIRE record) */
+  canAdd?: (entry: InspireReferenceEntry) => boolean;
+  /** Copy BibTeX (References panel: the paper has an INSPIRE record) */
+  canCopyBibtex?: (entry: InspireReferenceEntry) => boolean;
+  /** Copy the TeX key (References panel: a TeX key or an INSPIRE record) */
+  canCopyTexkey?: (entry: InspireReferenceEntry) => boolean;
+}
 
 /**
  * Context for preview card rendering.
@@ -67,6 +81,13 @@ export interface PreviewRenderContext {
   hasPdf?: boolean;
   /** Whether entry is a favorite (for showing star button) */
   isFavorite?: boolean;
+  /**
+   * Whether the paper's item is related to the item shown, for the link
+   * button (default: it is not)
+   */
+  isRelated?: boolean;
+  /** Which actions the card offers for the entry */
+  entryOptions?: PreviewEntryOptions;
 
   // Action callbacks (async to support state refresh after completion)
   onAdd?: (
@@ -236,7 +257,7 @@ export class HoverPreviewRenderer {
   buildContent(card: HTMLDivElement, ctx: PreviewRenderContext): void {
     const { entry } = ctx;
     const s = this.strings;
-    const dark = isDarkMode();
+    const dark = isDarkMode(this.doc);
 
     // Clear previous content
     card.replaceChildren();
@@ -391,6 +412,18 @@ export class HoverPreviewRenderer {
     const { entry } = ctx;
     const s = this.strings;
     const isLocal = Boolean(entry.localItemID);
+    // The library could not be read: neither "add" nor the local actions
+    const unknown = !isLocal && Boolean(entry.localStatusUnknown);
+    const options = ctx.entryOptions ?? {};
+    const canAdd = options.canAdd
+      ? options.canAdd(entry)
+      : Boolean(entry.recid);
+    const canCopyBibtex = options.canCopyBibtex
+      ? options.canCopyBibtex(entry)
+      : Boolean(entry.recid);
+    const canCopyTexkey = options.canCopyTexkey
+      ? options.canCopyTexkey(entry)
+      : Boolean(entry.texkey || entry.recid);
 
     const actionRow = this.doc.createElement("div");
     actionRow.classList.add("zinspire-preview-card__actions");
@@ -404,9 +437,11 @@ export class HoverPreviewRenderer {
     });
 
     // Action buttons (left side)
-    if (!isLocal) {
+    if (unknown) {
+      // Nothing to offer until the library can be read
+    } else if (!isLocal) {
       // Not in library - show Add button
-      if (entry.recid && ctx.onAdd) {
+      if (canAdd && ctx.onAdd) {
         const addButton = this.createActionButton(
           getString("references-panel-button-add"),
           "add",
@@ -435,15 +470,16 @@ export class HoverPreviewRenderer {
 
       // Link/Unlink button
       if (ctx.onLink) {
+        const related = ctx.isRelated === true;
         const linkButton = this.createActionButton(
-          entry.isRelated
+          related
             ? getString("references-panel-button-unlink")
             : getString("references-panel-button-link"),
-          entry.isRelated ? "unlink" : "link",
+          related ? "unlink" : "link",
         );
         linkButton.addEventListener("click", (e) => {
           e.stopPropagation();
-          if (entry.isRelated && ctx.onUnlink) {
+          if (related && ctx.onUnlink) {
             ctx.onUnlink(entry);
           } else {
             ctx.onLink!(entry);
@@ -454,7 +490,7 @@ export class HoverPreviewRenderer {
     }
 
     // Copy BibTeX button
-    if (entry.recid && ctx.onCopyBibtex) {
+    if (canCopyBibtex && ctx.onCopyBibtex) {
       const bibtexBtn = this.createActionButton(s.copyBibtex, "copy");
       bibtexBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -464,7 +500,7 @@ export class HoverPreviewRenderer {
     }
 
     // Copy texkey button
-    if ((entry.texkey || entry.recid) && ctx.onCopyTexkey) {
+    if (canCopyTexkey && ctx.onCopyTexkey) {
       const texkeyBtn = this.createActionButton(s.copyTexkey, "copy");
       texkeyBtn.textContent = "T";
       texkeyBtn.title = s.copyTexkey;
@@ -481,7 +517,7 @@ export class HoverPreviewRenderer {
     actionRow.appendChild(spacer);
 
     // Import marker (right side) for online entries, consistent with list marker (⊕)
-    if (!isLocal && entry.recid && ctx.onAdd) {
+    if (!isLocal && !unknown && canAdd && ctx.onAdd) {
       const importBtn = this.doc.createElementNS(
         XHTML_NS,
         "button",
@@ -492,7 +528,7 @@ export class HoverPreviewRenderer {
         s.dotAdd || getString("references-panel-button-add") || "";
       importBtn.setAttribute("aria-label", importBtn.title);
       applyRefEntryMarkerStyle(importBtn);
-      applyRefEntryMarkerColor(importBtn, false);
+      applyRefEntryMarkerColor(importBtn, false, isDarkMode(this.doc));
       importBtn.style.border = "none";
       importBtn.style.background = "transparent";
       importBtn.style.padding = "0";
@@ -529,14 +565,21 @@ export class HoverPreviewRenderer {
     });
 
     const statusIcon = this.doc.createElement("span");
-    statusIcon.textContent = isLocal ? "●" : "○";
+    statusIcon.textContent = isLocal ? "●" : unknown ? "?" : "○";
     statusIcon.style.fontSize = "10px";
     statusEl.appendChild(statusIcon);
 
+    const localCount = localItemCount(entry);
     const statusText = this.doc.createElement("span");
-    statusText.textContent = isLocal
-      ? getString("references-panel-status-local")
-      : getString("references-panel-status-online");
+    statusText.textContent = unknown
+      ? getString("references-panel-status-unknown")
+      : localCount >= 2
+        ? getString("references-panel-status-local-several", {
+            args: { count: localCount },
+          })
+        : isLocal
+          ? getString("references-panel-status-local")
+          : getString("references-panel-status-online");
     statusEl.appendChild(statusText);
 
     const resolveOnlineUrl = (): string | null => {
@@ -558,12 +601,19 @@ export class HoverPreviewRenderer {
     };
 
     const canSelect = isLocal && typeof ctx.onSelectInLibrary === "function";
-    const onlineUrl = !isLocal ? resolveOnlineUrl() : null;
+    const onlineUrl = !isLocal && !unknown ? resolveOnlineUrl() : null;
     const canOpenOnline = !isLocal && Boolean(onlineUrl);
 
-    statusEl.title = isLocal
-      ? getString("references-panel-button-select") || ""
-      : getString("references-panel-open-link") || "";
+    statusEl.title = unknown
+      ? getString("references-panel-dot-unknown") || ""
+      : isLocal
+        ? [
+            getString("references-panel-button-select") || "",
+            localItemsList(entry),
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : getString("references-panel-open-link") || "";
     statusEl.disabled = !(canSelect || canOpenOnline);
     if (statusEl.disabled) {
       statusEl.style.opacity = "0.55";
@@ -822,12 +872,12 @@ export class HoverPreviewRenderer {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Position the preview card relative to a row element.
+   * Position the preview card relative to a row element, within the viewport
+   * of the window the card is in.
    * Prefers right side of row, falls back to below if no space.
    */
   positionRelativeToRow(card: HTMLDivElement, row: HTMLElement): void {
-    const mainWindow = Zotero.getMainWindow();
-    const doc = mainWindow?.document || this.doc;
+    const doc = card.ownerDocument;
     const viewportWidth = doc.documentElement?.clientWidth || 800;
     const viewportHeight = doc.documentElement?.clientHeight || 600;
 
@@ -873,13 +923,13 @@ export class HoverPreviewRenderer {
   }
 
   /**
-   * Position the preview card relative to a rect (e.g., button position).
+   * Position the preview card relative to a rect (e.g., button position),
+   * within the viewport of the window the card is in.
    * Uses BOTTOM positioning so card anchors at bottom and expands upward.
    * This keeps pagination buttons near the anchor when content changes.
    */
   positionRelativeToRect(card: HTMLDivElement, rect: PositionRect): void {
-    const mainWindow = Zotero.getMainWindow();
-    const doc = mainWindow?.document || this.doc;
+    const doc = card.ownerDocument;
     const viewportWidth = doc.documentElement?.clientWidth || 800;
     const viewportHeight = doc.documentElement?.clientHeight || 600;
 

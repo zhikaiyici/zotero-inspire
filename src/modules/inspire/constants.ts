@@ -130,8 +130,6 @@ export const CHART_MAX_BAR_WIDTH = 50;
 export const RENDER_PAGE_SIZE_FILTERED = 500;
 /** Batch size for metadata enrichment */
 export const METADATA_BATCH_SIZE = 50;
-/** Batch size for local status SQL queries */
-export const LOCAL_STATUS_BATCH_SIZE = 500;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Filter Thresholds
@@ -168,6 +166,7 @@ export const CITATION_RANGES = {
 export const SEARCH_HISTORY_MAX_ENTRIES = 50;
 export const SEARCH_HISTORY_PREF_KEY = "inspireSearchHistory";
 export const ACADEMIC_SEARCH_HISTORY_PREF_KEY = "academicAuthorSearchHistory";
+export const ARXIV_SEARCH_HISTORY_PREF_KEY = "arxivSearchHistory";
 export const SEARCH_HISTORY_DAYS_PREF_KEY = "search_history_days";
 export const SEARCH_HISTORY_DAYS_DEFAULT = 30;
 export const FILTER_HISTORY_MAX_ENTRIES = 50;
@@ -252,7 +251,8 @@ export type QuickFilterType =
   | "preprintOnly"
   | "relatedOnly"
   | "localItems"
-  | "onlineItems";
+  | "onlineItems"
+  | "smallAuthorGroup";
 
 export const QUICK_FILTER_TYPES: QuickFilterType[] = [
   "highCitations",
@@ -264,6 +264,7 @@ export const QUICK_FILTER_TYPES: QuickFilterType[] = [
   "relatedOnly",
   "localItems",
   "onlineItems",
+  "smallAuthorGroup",
 ];
 
 export const QUICK_FILTER_PREF_KEY = "quick_filters_last_used";
@@ -343,11 +344,19 @@ export const API_FIELDS_LOOKUP =
   "control_number,titles.title,dois,arxiv_eprints,texkeys";
 
 /**
- * Fields for preprint publication status check (FTR-PREPRINT-WATCH).
+ * Fields for preprint publication status check (FTR-PREPRINT-WATCH), beyond
+ * those of the lookup by arXiv ID and its identity check.
  * Minimal fields to detect if an arXiv preprint has been published.
  */
-export const API_FIELDS_PREPRINT_CHECK =
-  "control_number,publication_info,dois,preprint_date";
+export const API_FIELDS_PREPRINT_CHECK = "publication_info,dois,preprint_date";
+
+/**
+ * Fields that writing an item's INSPIRE record (INSPIRE completion) takes
+ * from the record, beyond those of the lookup by arXiv ID and its identity
+ * check.
+ */
+export const API_FIELDS_INSPIRE_COMPLETION =
+  "texkeys,citation_count,citation_count_without_self_citations";
 
 /**
  * Fields for author profile fetch (Authors API).
@@ -366,6 +375,10 @@ export function buildFieldsParam(fields: string): string {
   return `&fields=${fields}`;
 }
 
+/**
+ * The quick filters the References panel's popup offers. "≤10 authors" is
+ * not among them: the panel has its own button for it next to the chart.
+ */
 export const QUICK_FILTER_CONFIGS: QuickFilterConfig[] = [
   {
     type: "highCitations",
@@ -422,3 +435,11 @@ export const QUICK_FILTER_CONFIGS: QuickFilterConfig[] = [
     tooltipKey: "references-panel-quick-filter-preprint-tooltip",
   },
 ];
+
+/** "≤10 authors" as a quick filter, for popups that offer it */
+export const SMALL_AUTHOR_GROUP_FILTER_CONFIG: QuickFilterConfig = {
+  type: "smallAuthorGroup",
+  emoji: "👥",
+  labelKey: "references-panel-chart-author-filter",
+  tooltipKey: "references-panel-chart-author-filter-tooltip",
+};

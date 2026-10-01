@@ -102,7 +102,10 @@ pref-reader-auto-reopen =
 pref-reader-auto-reopen-desc = 启用后，如果阅读器标签页已关闭，在使用前进或后退导航时将自动重新打开。
 pref-auto-find-fulltext =
     .label = 添加到文库后自动“查找全文”
-pref-auto-find-fulltext-desc = 从面板将参考文献添加到文库时，自动对新条目执行 Zotero 的“查找全文”以获取 PDF（仅单条添加，不含批量导入）。
+pref-auto-find-fulltext-desc = 从面板将参考文献添加到文库时，自动对新条目执行 Zotero 的“查找全文”以获取 PDF（仅单条添加，不含面板的批量导入）。开启时，从 arXiv 浏览器加入的论文（单篇与批量）改附 arXiv 的 PDF。
+pref-arxiv-pdf-skip-journal =
+    .label = 从 arXiv 浏览器加入的期刊条目不附 arXiv PDF
+pref-arxiv-pdf-skip-journal-desc = 开启上面的选项时，arXiv 浏览器作为期刊文章加入的论文（来自 INSPIRE 或按 DOI）不附 arXiv 预印本 PDF；期刊版本可用 Zotero 的“查找可用 PDF”获取。预印本条目照常附上。
 
 pref-nofound-enable =
     .label = 为没有 INSPIRE 记录的条目添加标签
@@ -202,5 +205,24 @@ pref-dev = 开发者
 pref-dev-panel-layout =
     .label = 启用面板布局调试（Citing…）
 pref-dev-panel-layout-desc = 输出 [PANEL-LAYOUT] 调试日志，并在面板状态栏显示“Copy layout”按钮（用于定位溢出/遮挡问题）。
+
+pref-arxiv-browser = arXiv 浏览器
+pref-arxiv-browser-default-subscription = 打开时的订阅：
+pref-arxiv-browser-first-subscription =
+    .label = 第一个订阅
+pref-arxiv-browser-no-subscription = 尚无订阅：请在 arXiv 浏览器中新建（查看 → arXiv 浏览器）。
+pref-arxiv-browser-open-days = 打开时显示：
+pref-arxiv-browser-open-newest =
+    .label = 最新一日
+pref-arxiv-browser-open-recent =
+    .label = 最近 5 个公告日
+pref-arxiv-browser-open-week =
+    .label = 本周
+pref-arxiv-browser-abstracts =
+    .label = 在列表中显示摘要（所选论文的摘要总在详情栏中）
+pref-arxiv-browser-page-size = 每页篇数：
+pref-arxiv-browser-page-size-desc = 10 至 500；也可在列表中更改。
+pref-arxiv-browser-open-on-startup =
+    .label = 启动 Zotero 时打开 arXiv 浏览器
 
 pref-help = { $name } 版本 { $version } { $time }

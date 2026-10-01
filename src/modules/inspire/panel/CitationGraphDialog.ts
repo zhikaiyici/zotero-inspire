@@ -10,16 +10,18 @@ import { AcademicTreeView } from "./AcademicTreeView";
 import type { AuthorSearchInfo } from "../types";
 import { getString } from "../../../utils/locale";
 import { getPref, setPref } from "../../../utils/prefs";
-import {
-  getPrimarySelectedCollection,
-  getPrimarySelectedLibraryID,
-} from "../../../utils/zoteroPaneSelection";
+import { getPrimarySelectedLibraryID } from "../../../utils/zoteroPaneSelection";
 import {
   applyPillButtonStyle,
   showTargetPickerUI,
-  type SaveTargetRow,
   type SaveTargetSelection,
 } from "../../pickerUI";
+import {
+  buildSaveTargets,
+  mainWindowSaveTargetID,
+  recentSaveTargets,
+  rememberSaveTarget,
+} from "../../saveTargets";
 import { invalidateDarkModeCache, isDarkMode } from "../styles";
 import type { CitationGraphSortMode } from "../citationGraphService";
 import {
@@ -33,12 +35,15 @@ import {
   buildFieldsParam,
 } from "../constants";
 import { createAbortControllerWithSignal, ReaderTabHelper } from "../utils";
-import {
-  copyToClipboard,
-  deriveRecidFromItem,
-  findItemByRecid,
-} from "../apiUtils";
+import { copyToClipboard, deriveRecidFromItem } from "../apiUtils";
 import { fetchReferencesEntries } from "../referencesService";
+import {
+  findItemByRecid,
+  LibraryIndexError,
+  onLibraryIndexChange,
+} from "../library/arxivIndex";
+import { refreshLocalState, type LocalPaper } from "../library/localStatus";
+import { localCountMark, localMarkState } from "./localMarker";
 import type {
   CitationGraphEdgeData,
   CitationGraphNodeData,
@@ -49,18 +54,9 @@ import type {
   MultiSeedGraphResult,
 } from "../types";
 import { inspireFetch } from "../rateLimiter";
-import {
-  fetchBibTeX,
-  fetchInspireMetaByRecid,
-  fetchInspireTexkey,
-} from "../metadataService";
+import { fetchBibTeX, fetchInspireTexkey } from "../metadataService";
 import { localCache } from "../localCache";
-import {
-  getItemTypePolicy,
-  saveItemWithPendingInspireNote,
-  setInspireMeta,
-} from "../itemUpdater";
-import { resolveNewItemType } from "../itemTypePolicy";
+import { createItemFromInspireRecord } from "../library/itemCreation";
 import { HoverPreviewController } from "./HoverPreviewController";
 
 type RecidSnapshot = { recid: string; title?: string; authorLabel?: string };
@@ -103,6 +99,8 @@ export class CitationGraphDialog {
 
   private readonly doc: Document;
   private readonly onDispose?: () => void;
+  /** Stops redrawing the in-library marks when the library index changes */
+  private stopFollowingLibrary?: () => void;
 
   private backdropEl?: HTMLDivElement;
   private dialogEl?: HTMLDivElement;
@@ -214,8 +212,34 @@ export class CitationGraphDialog {
     this.seeds = this.normalizeSeeds(seeds);
     this.current = this.seeds[0] ?? { recid: "" };
     this.buildUI();
+    this.followLibrary();
     if (this.academicAuthor) this.switchGraphMode?.(true);
     else void this.loadSeeds(this.seeds);
+  }
+
+  /** Keep the in-library marks of the graph shown in step with the library */
+  private followLibrary(): void {
+    this.stopFollowingLibrary ??= onLibraryIndexChange(() => {
+      void this.refreshLocalMarks();
+    });
+  }
+
+  /**
+   * Recompute the in-library marks of the graph shown from the library index
+   * (localStatus.ts), and draw the graph again if one changed.
+   */
+  private async refreshLocalMarks(): Promise<void> {
+    const graph = this.graphResult;
+    if (!graph || this.disposed) return;
+    const changed = await refreshLocalState([
+      ...graph.seeds,
+      ...graph.references,
+      ...graph.citedBy,
+    ]);
+    if (!changed.length || this.disposed || this.graphResult !== graph) return;
+    this.updateHeader(graph);
+    this.academicTreeView?.refreshAppearance();
+    this.renderGraph(graph);
   }
 
   dispose(): void {
@@ -223,6 +247,8 @@ export class CitationGraphDialog {
       return;
     }
     this.disposed = true;
+    this.stopFollowingLibrary?.();
+    this.stopFollowingLibrary = undefined;
     this.academicTreeView?.dispose();
     this.academicTreeView = undefined;
     this.switchGraphMode = undefined;
@@ -663,6 +689,8 @@ export class CitationGraphDialog {
     // Close on Esc
     const escHandler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // Handled here: a running update does not take it as a cancel
+        e.preventDefault();
         this.dispose();
       }
     };
@@ -768,6 +796,25 @@ export class CitationGraphDialog {
 
     this.backdropEl = backdrop;
     this.dialogEl = dialog;
+
+    // Take the keyboard focus, as a dialog does, and give it back on close
+    // unless it has gone elsewhere meanwhile (e.g. Zotero focused the items
+    // list after a node selected its item). Left where it was (e.g. in
+    // Zotero's collection tree, which takes Escape for itself), Escape would
+    // not reach the dialog.
+    const focusBefore = this.doc.activeElement as HTMLElement | null;
+    dialog.tabIndex = -1;
+    dialog.style.outline = "none";
+    dialog.focus({ preventScroll: true });
+    const disposeBeforeFocus = this.dispose.bind(this);
+    this.dispose = () => {
+      const focusInGraph =
+        !this.disposed && backdrop.contains(this.doc.activeElement);
+      disposeBeforeFocus();
+      if (focusInGraph && focusBefore?.isConnected) {
+        focusBefore.focus({ preventScroll: true });
+      }
+    };
 
     this.ensureSpinnerStyles();
     this.setupResizeObserver();
@@ -1005,7 +1052,16 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
                 }) || `Connections: ${this.allConnectionEdges.length}`
               }`
           : "";
-        this.statusEl.textContent = `Refs ${result.shown.references}/${result.totals.references} · Cited-by ${result.shown.citedBy}/${result.totals.citedBy}${connectionsHint} · ${hint}`;
+        // Papers are shown as not in the library when the library could not
+        // be read: say so
+        const unreadable = [
+          ...result.seeds,
+          ...result.references,
+          ...result.citedBy,
+        ].some((paper) => paper.localStatusUnknown)
+          ? ` · ${getString("references-panel-library-lookup-failed")}`
+          : "";
+        this.statusEl.textContent = `Refs ${result.shown.references}/${result.totals.references} · Cited-by ${result.shown.citedBy}/${result.totals.citedBy}${connectionsHint}${unreadable} · ${hint}`;
       }
     }
 
@@ -1527,104 +1583,9 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
     }
   }
 
-  private getRecentTargets(): { ids: Set<string>; ordered: string[] } {
-    const ids = new Set<string>();
-    const ordered: string[] = [];
-    try {
-      const raw = Zotero.Prefs.get("recentSaveTargets") as string | undefined;
-      if (!raw) {
-        return { ids, ordered };
-      }
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        for (const entry of parsed) {
-          if (entry?.id && typeof entry.id === "string") {
-            ids.add(entry.id);
-            ordered.push(entry.id);
-          }
-        }
-      }
-    } catch (_err) {
-      Zotero.Prefs.clear("recentSaveTargets");
-    }
-    return { ids, ordered };
-  }
-
-  private rememberRecentTarget(targetID: string): void {
-    try {
-      const raw = Zotero.Prefs.get("recentSaveTargets") as string | undefined;
-      let entries: Array<{ id: string }> = [];
-      if (raw) {
-        entries = JSON.parse(raw);
-      }
-      if (!Array.isArray(entries)) {
-        entries = [];
-      }
-      entries = entries.filter((entry) => entry?.id !== targetID);
-      entries.unshift({ id: targetID });
-      Zotero.Prefs.set(
-        "recentSaveTargets",
-        JSON.stringify(entries.slice(0, 5)),
-      );
-    } catch (_err) {
-      Zotero.Prefs.clear("recentSaveTargets");
-    }
-  }
-
-  private getDefaultTargetID(): string | null {
-    const pane = Zotero.getActiveZoteroPane?.();
-    const selected = getPrimarySelectedCollection(pane);
-    if (selected) {
-      return `C${selected.id}`;
-    }
-    const libraryID =
-      getPrimarySelectedLibraryID(pane) ??
-      (Zotero.Libraries as any)?.userLibrary?.libraryID;
-    return libraryID ? `L${libraryID}` : null;
-  }
-
-  private buildSaveTargets(recentIDs: Set<string>): SaveTargetRow[] {
-    const targets: SaveTargetRow[] = [];
-    for (const library of Zotero.Libraries.getAll()) {
-      if (!library?.editable) {
-        continue;
-      }
-      const libraryID = library.libraryID;
-      targets.push({
-        id: `L${libraryID}`,
-        name: library.name,
-        level: 0,
-        type: "library",
-        libraryID,
-        filesEditable: library.filesEditable,
-        recent: recentIDs.has(`L${libraryID}`),
-      });
-      const collections =
-        Zotero.Collections.getByLibrary(libraryID, true) || [];
-      for (const collection of collections) {
-        const rawLevel = (collection as any)?.level;
-        const level = typeof rawLevel === "number" ? rawLevel + 1 : 1;
-        targets.push({
-          id: collection.treeViewID,
-          name: collection.name,
-          level,
-          type: "collection",
-          libraryID,
-          collectionID: collection.id,
-          filesEditable: library.filesEditable,
-          parentID: collection.parentID
-            ? `C${collection.parentID}`
-            : `L${libraryID}`,
-          recent: recentIDs.has(collection.treeViewID),
-        });
-      }
-    }
-    return targets;
-  }
-
   private async promptForSaveTarget(): Promise<SaveTargetSelection | null> {
-    const recentTargets = this.getRecentTargets();
-    const targets = this.buildSaveTargets(recentTargets.ids);
+    const recentTargets = recentSaveTargets();
+    const targets = buildSaveTargets(recentTargets.ids);
     if (!targets.length) {
       this.showToast(
         getString("references-panel-picker-empty") || "No writable libraries",
@@ -1632,7 +1593,7 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
       return null;
     }
 
-    let defaultID = this.getDefaultTargetID();
+    let defaultID = mainWindowSaveTargetID();
     if (!defaultID) {
       defaultID = recentTargets.ordered[0] || targets[0]?.id || null;
     }
@@ -1668,7 +1629,7 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
         container,
       );
       if (selection?.primaryRowID) {
-        this.rememberRecentTarget(selection.primaryRowID);
+        rememberSaveTarget(selection.primaryRowID);
       }
       return selection;
     } finally {
@@ -1715,7 +1676,15 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
       return;
     }
 
-    const existing = await findItemByRecid(recid).catch(() => null);
+    let existing: Zotero.Item | null;
+    try {
+      existing = await findItemByRecid(recid);
+    } catch (err) {
+      // Without the check the paper could be added twice: add nothing
+      if (!(err instanceof LibraryIndexError)) throw err;
+      this.showToast(getString("references-panel-library-lookup-failed-add"));
+      return;
+    }
     if (existing?.id) {
       entry.localItemID = existing.id;
       this.applyLocalItemId(recid, existing.id);
@@ -1732,44 +1701,13 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
       return;
     }
 
-    const meta = await fetchInspireMetaByRecid(recid);
-    if (meta === -1) {
+    // Added without being selected, so the library selection stays
+    const newItem = await createItemFromInspireRecord(recid, target);
+    if (!newItem) {
       this.showToast(
         getString("references-panel-toast-missing") || "Record not found",
       );
       return;
-    }
-
-    const newItem = new Zotero.Item(
-      resolveNewItemType(meta as any, getItemTypePolicy()),
-    );
-    newItem.libraryID = target.libraryID;
-    const collectionIDs = Array.from(new Set(target.collectionIDs)).filter(
-      (id): id is number => typeof id === "number",
-    );
-    newItem.setField("extra", "");
-    newItem.setCollections(collectionIDs.length ? collectionIDs : []);
-
-    if (Array.isArray(target.tags) && target.tags.length) {
-      for (const tag of target.tags) {
-        if (typeof tag === "string" && tag.trim()) {
-          newItem.addTag(tag.trim());
-        }
-      }
-    }
-
-    await setInspireMeta(newItem, meta as any, "full");
-    // Add the new item and its child note without letting Zotero auto-select
-    // the new row, so the current library selection is not disturbed
-    // (consistent with importReference).
-    await saveItemWithPendingInspireNote(newItem, { skipSelect: true });
-
-    if (target.note) {
-      const note = new Zotero.Item("note");
-      note.setNote(target.note);
-      note.parentID = newItem.id;
-      note.libraryID = newItem.libraryID;
-      await note.saveTx({ skipSelect: true });
     }
 
     entry.localItemID = newItem.id;
@@ -1842,7 +1780,9 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
 
     let isPresentation = false;
     if (entry.localItemID) {
-      const item = Zotero.Items.get(entry.localItemID);
+      const item = Zotero.Items.get(entry.localItemID) as
+        | Zotero.Item
+        | undefined;
       if (item?.itemType === "presentation") {
         isPresentation = true;
       }
@@ -2712,6 +2652,8 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
     this.updateHeader(graph);
     this.renderSeedsPanel(graph);
     this.renderGraph(graph);
+    // The file has the marks of the library it was saved from
+    void this.refreshLocalMarks();
   }
 
   private async loadFromFilePicker(): Promise<void> {
@@ -3942,7 +3884,14 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
     }
 
     // Try to find the item in Zotero
-    const item = await findItemByRecid(recid);
+    let item: Zotero.Item | null;
+    try {
+      item = await findItemByRecid(recid);
+    } catch (err) {
+      if (!(err instanceof LibraryIndexError)) throw err;
+      this.showToast(getString("references-panel-library-lookup-failed"));
+      return;
+    }
 
     if (item) {
       // Item exists in Zotero - jump to it
@@ -5218,6 +5167,7 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
     textFill: string,
     textSecondary: string,
     nodePositions?: Array<{ x: number; y: number; r: number }>,
+    libraryUnknown = false,
   ): void {
     if (!this.svgGroupEl) return;
 
@@ -5226,6 +5176,8 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
     const onlineColor = dark ? "#6b7280" : "#9ca3af";
 
     const legendLabels = ["In library", "Online", "Ref", "Cited-by", "Seed"];
+    // Papers whose library state is unknown (the library could not be read)
+    if (libraryUnknown) legendLabels.push("Library unknown");
     const fontSize = 9;
     const charWidth = fontSize * 0.6;
     const maxLabelWidth = Math.max(
@@ -5379,6 +5331,27 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
     seedLabel.setAttribute("fill", textFill);
     seedLabel.setAttribute("font-size", String(fontSize));
     this.svgGroupEl.appendChild(seedLabel);
+
+    if (libraryUnknown) {
+      // Library unknown (dashed outline)
+      const unknownCircle = this.doc.createElementNS(SVG_NS, "circle");
+      unknownCircle.setAttribute("cx", String(iconX));
+      unknownCircle.setAttribute("cy", String(rowY(5)));
+      unknownCircle.setAttribute("r", String(iconR));
+      unknownCircle.setAttribute("fill", "none");
+      unknownCircle.setAttribute("stroke", onlineColor);
+      unknownCircle.setAttribute("stroke-width", "1.2");
+      unknownCircle.setAttribute("stroke-dasharray", "2 2");
+      this.svgGroupEl.appendChild(unknownCircle);
+
+      const unknownLabel = this.doc.createElementNS(SVG_NS, "text");
+      unknownLabel.textContent = "Library unknown";
+      unknownLabel.setAttribute("x", String(labelX));
+      unknownLabel.setAttribute("y", String(labelBaselineY(5)));
+      unknownLabel.setAttribute("fill", textFill);
+      unknownLabel.setAttribute("font-size", String(fontSize));
+      this.svgGroupEl.appendChild(unknownLabel);
+    }
   }
 
   private renderGraph(result: MultiSeedGraphResult): void {
@@ -5702,7 +5675,8 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
       labelX: number;
       labelY: number;
       isSeed?: boolean;
-      localItemID?: number;
+      /** In-library marks of the paper (localStatus.ts) */
+      marks?: LocalPaper;
       year?: string;
       kind: "seed" | "reference" | "citedBy";
     }) => {
@@ -5713,14 +5687,24 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
       // Determine fill color based on Zotero status
       // Green for in library, gray for online (consistent with References panel marker concept)
       const seedLabelColor = dark ? "#a78bfa" : "#6d28d9";
-      const inLibrary = typeof opts.localItemID === "number";
+      const state = localMarkState(opts.marks ?? {});
       const localColor = dark ? "#22c55e" : "#1a8f4d"; // Green
       const onlineColor = dark ? "#6b7280" : "#9ca3af"; // Gray
+      // The library could not be read: an outline only, not "online"
+      const unknown = !opts.isSeed && state === "unknown";
       const fillColor = opts.isSeed
         ? seedFill
-        : inLibrary
+        : state === "local"
           ? localColor
-          : onlineColor;
+          : unknown
+            ? "none"
+            : onlineColor;
+      const markUnknown = (shape: Element) => {
+        if (!unknown) return;
+        shape.setAttribute("stroke", onlineColor);
+        shape.setAttribute("stroke-width", "1.2");
+        shape.setAttribute("stroke-dasharray", "2 2");
+      };
 
       // Use circle for references/seeds, pentagon for cited-by
       if (opts.kind === "citedBy" && !opts.isSeed) {
@@ -5730,6 +5714,7 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
         pentagon.setAttribute("points", points);
         pentagon.setAttribute("fill", fillColor);
         pentagon.setAttribute("fill-opacity", "0.75");
+        markUnknown(pentagon);
         group.appendChild(pentagon);
       } else {
         // Circle for references and seed
@@ -5744,12 +5729,17 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
           circle.setAttribute("stroke-width", "1.5");
           circle.setAttribute("stroke-opacity", "0.9");
         }
+        markUnknown(circle);
         group.appendChild(circle);
       }
 
-      // Show "Author et al. (Year)" label only
+      // Show "Author et al. (Year)" label only, with the number of items
+      // when the paper is in the library several times
       const label = this.doc.createElementNS(SVG_NS, "text");
-      label.textContent = opts.authorLabel;
+      const countMark = localCountMark(opts.marks ?? {});
+      label.textContent = countMark
+        ? `${opts.authorLabel} ${countMark}`
+        : opts.authorLabel;
       label.setAttribute("x", String(opts.labelX));
       label.setAttribute("y", String(opts.labelY));
       label.setAttribute("fill", opts.isSeed ? seedLabelColor : textFill);
@@ -6030,7 +6020,8 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
         displayText: "",
         searchText: "",
         localItemID: seed.localItemID,
-        isRelated: false,
+        localItemIDs: seed.localItemIDs,
+        localStatusUnknown: seed.localStatusUnknown,
         citationCount: seed.citationCount,
         citationCountWithoutSelf: seed.citationCount,
         publicationInfo: seed.year ? { year: seed.year } : undefined,
@@ -6486,7 +6477,7 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
         labelX,
         labelY,
         isSeed: n.kind === "seed",
-        localItemID: n.localItemID,
+        marks: n.entry ?? { localItemID: n.localItemID },
         year: n.year,
         kind: n.kind,
       });
@@ -6495,7 +6486,16 @@ button.zinspire-citation-graph-refresh.zinspire-citation-graph-refresh--loading 
     }
 
     // Render legend after nodes (to find best position)
-    this.renderLegend(width, padX, textFill, textSecondary, nodePositions);
+    this.renderLegend(
+      width,
+      padX,
+      textFill,
+      textSecondary,
+      nodePositions,
+      allNodes.some(
+        (n) => n.kind !== "seed" && n.entry?.localStatusUnknown === true,
+      ),
+    );
 
     this.applyViewTransform();
   }

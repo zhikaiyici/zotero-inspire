@@ -11,6 +11,7 @@ pref("__prefsPrefix__.arxiv_tag_enable", false);
 pref("__prefsPrefix__.max_authors", 3);
 pref("__prefsPrefix__.reader_auto_reopen", false);
 pref("__prefsPrefix__.auto_find_fulltext_on_import", false); // ISSUE-110: after adding a reference to the library, auto-run Zotero Find Full Text on the new item
+pref("__prefsPrefix__.arxiv_pdf_skip_journal_items", false); // arXiv browser: attach no arXiv PDF to journal items added from INSPIRE or by DOI
 pref("__prefsPrefix__.chart_enable", true);
 pref("__prefsPrefix__.chart_default_collapsed", true);
 pref("__prefsPrefix__.related_papers_enable", true); // FTR-RELATED-PAPERS: enable Related tab
@@ -49,7 +50,7 @@ pref("__prefsPrefix__.smart_update_protected_names", ""); // Comma-separated lis
 // Preprint watch settings (FTR-PREPRINT-WATCH)
 pref("__prefsPrefix__.preprint_watch_enabled", true); // Enable preprint publication monitoring
 pref("__prefsPrefix__.preprint_watch_auto_check", "never"); // Auto-check timing: "startup" | "daily" | "never"
-pref("__prefsPrefix__.preprint_watch_last_check", 0); // Last check timestamp
+pref("__prefsPrefix__.preprint_watch_last_check", 0); // Last background check (seconds since 1970)
 pref("__prefsPrefix__.preprint_watch_notify", true); // Show notification when publications found
 // Collaboration tag settings (FTR-COLLAB-TAGS)
 pref("__prefsPrefix__.collab_tag_enable", false); // Enable collaboration tagging
@@ -66,3 +67,11 @@ pref("__prefsPrefix__.favorite_authors", "[]"); // JSON array of FavoriteAuthor 
 pref("__prefsPrefix__.favorite_papers", "[]"); // JSON array of FavoritePaper objects
 // Favorite presentations (FTR-FAVORITE-PRESENTATIONS)
 pref("__prefsPrefix__.favorite_presentations", "[]"); // JSON array of FavoritePresentation objects
+// arXiv browser (stage 3a)
+pref("__prefsPrefix__.arxiv_subscriptions", "[]"); // JSON array of the browser's subscriptions (name, categories, shown sections)
+pref("__prefsPrefix__.arxiv_browser_default_subscription", ""); // id of the subscription the window opens with (empty: the first one)
+pref("__prefsPrefix__.arxiv_browser_open_days", "newest"); // days the window opens with: "newest" | "recent" | "week"
+pref("__prefsPrefix__.arxiv_browser_page_size", 50); // papers per page (10-500)
+pref("__prefsPrefix__.arxiv_browser_abstracts_expanded", false); // abstracts shown in the list by default (else in the detail pane only)
+pref("__prefsPrefix__.arxiv_browser_open_on_startup", false); // open the arXiv browser when Zotero starts
+pref("__prefsPrefix__.arxiv_browser_list_share", 60); // the list's share of the window width, in percent (25-80; the divider sets it)

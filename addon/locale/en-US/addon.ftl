@@ -220,12 +220,19 @@ references-panel-filter-count-author =
   { $visible } / { $total } papers by { $label }
 references-panel-dot-local = Item exists in your library
 references-panel-dot-add = Add this reference to your library
+references-panel-dot-local-several = { $count } items in your library have this paper's INSPIRE ID; a click selects the first:
+references-panel-dot-local-several-arxiv = { $count } items in your library have this paper's arXiv ID; a click selects the first:
+references-panel-dot-unknown = Could not read your library, so it is not known whether this paper is in it. Click to try again.
 references-panel-related-badge-tooltip = Shares { $count } references with the current paper
 references-panel-link-existing = Click to unlink the related item
 references-panel-link-missing = Link as related item
 references-panel-toast-linked = Related item linked successfully
+references-panel-toast-link-other-library = Items in different libraries cannot be related
+references-panel-toast-link-target-gone = Not linked: the item it was to be linked to has been deleted or moved to the trash
 references-panel-toast-added = Reference added to your library
 references-panel-toast-missing = Article not found in INSPIRE-HEP
+references-panel-library-lookup-failed = Could not read your library. Please try again.
+references-panel-library-lookup-failed-add = Could not check whether this paper is already in your library, so it was not added. Please try again.
 references-panel-toast-no-pdf = This item has no PDF attachment
 references-panel-toast-selected = Item selected in library
 references-panel-toast-bibtex-success = BibTeX copied to clipboard
@@ -289,6 +296,13 @@ references-panel-author-profile-collapse = Collapse
 references-panel-author-profile-expand = Expand
 references-panel-author-preview-view-papers = View all papers
 references-panel-author-copied = Copied
+references-panel-author-library-count =
+  { $count ->
+    [one] 1 paper in your library
+   *[other] { $count } papers in your library
+  }
+references-panel-author-search-arxiv = Search arXiv for this author
+references-panel-author-search-inspire = Search INSPIRE for this author
 references-panel-author-orcid-label = ORCID
 references-panel-author-bai-label = BAI
 references-panel-author-recid-label = INSPIRE ID
@@ -317,6 +331,8 @@ references-panel-abstract-latex-copied = LaTeX source copied to clipboard
 # Preview Card Action Buttons (FTR-HOVER-PREVIEW)
 references-panel-status-local = In Library
 references-panel-status-online = Online
+references-panel-status-local-several = In Library ({ $count })
+references-panel-status-unknown = Library unknown
 references-panel-button-add = Add to Library
 references-panel-button-link = Link
 references-panel-button-unlink = Unlink
@@ -324,7 +340,12 @@ references-panel-button-select = Select
 references-panel-button-open-pdf = Open PDF
 
 update-cancelled = Update cancelled by user
-update-cancelled-stats = Updated { $completed }/{ $total } items before cancellation
+update-cancelled-stats = Processed { $completed }/{ $total } items, { $updated } of them updated
+update-request-failed =
+  { $count ->
+    [one] No usable answer from INSPIRE for 1 item (network, server or record problem); it was left unchanged
+   *[other] No usable answer from INSPIRE for { $count } items (network, server or record problem); they were left unchanged
+  }
 
 zoteroinspire-refresh-button =
     .tooltiptext = Refresh INSPIRE data
@@ -378,6 +399,7 @@ references-panel-chart-filtered = Filtered
 # Rate limiter localization strings
 references-panel-rate-limit-tooltip = INSPIRE API rate limit status
 references-panel-rate-limit-queued = { $count } requests queued (rate limiting active)
+references-panel-rate-limit-label = INSPIRE queue: { $count }
 
 # Search feature localization strings
 references-panel-tab-search = 🔍
@@ -444,6 +466,7 @@ references-panel-batch-select-all = Select all
 references-panel-batch-clear = Clear
 references-panel-batch-import = Import
 references-panel-batch-importing = Importing { $done } / { $total }...
+references-panel-batch-attaching-pdfs = Attaching PDFs { $done } / { $total }...
 references-panel-batch-import-success =
   { $count ->
     [one] Imported 1 reference
@@ -461,10 +484,13 @@ references-panel-batch-duplicate-message =
 references-panel-batch-duplicate-match-recid = (matched by INSPIRE ID)
 references-panel-batch-duplicate-match-arxiv = (matched by arXiv ID)
 references-panel-batch-duplicate-match-doi = (matched by DOI)
+references-panel-batch-duplicate-items = ({ $count } items)
+references-panel-batch-duplicate-libraries = in { $libraries }
 references-panel-batch-duplicate-skip-all = Skip all duplicates
 references-panel-batch-duplicate-import-all = Import all anyway
 references-panel-batch-duplicate-confirm = Confirm selection
 references-panel-batch-duplicate-cancel = Cancel
+references-panel-batch-duplicate-check-failed = Could not check your library for these papers, so nothing was imported. Please try again.
 
 # PDF Citation Lookup (FTR-PDF-ANNOTATE)
 pdf-annotate-lookup-button = Look up in References
@@ -499,6 +525,7 @@ smart-update-field-citekey = Citation Key (in extra)
 smart-update-field-citationKey = Citation Key
 smart-update-field-collaboration = Collaboration
 smart-update-field-authors = Authors
+smart-update-authors-lost = INSPIRE's author list lacks authors this item has; tick to replace them anyway.
 
 # Smart Update Preview Dialog
 smart-update-preview-title = Smart Update Preview
@@ -539,7 +566,11 @@ preprint-found-published =
     [one] 1 preprint has been published!
    *[other] { $count } preprints have been published!
   }
-preprint-all-current = All preprints are still unpublished.
+preprint-check-summary =
+  Checked { $total ->
+    [one] 1 preprint
+   *[other] { $total } preprints
+  }: { $published } published, { $unpublished } unpublished, { $notInInspire } not covered by INSPIRE (publication unknown), { $errors } failed
 preprint-no-preprints = No unpublished preprints found.
 preprint-update-success =
   { $count ->
@@ -552,7 +583,28 @@ preprint-cancel = Cancel
 preprint-doi-updated = DOI updated: { $oldDoi } → { $newDoi }
 preprint-results-published = Published
 preprint-results-unpublished = Unpublished
+preprint-results-not-in-inspire = Not covered by INSPIRE (publication unknown)
 preprint-results-errors = Errors
+preprint-found-records =
+  { $count ->
+    [one] 1 preprint has an INSPIRE record its item does not name yet
+   *[other] { $count } preprints have an INSPIRE record their items do not name yet
+  }
+preprint-section-published = Published: update the bibliographic information
+preprint-section-records = In INSPIRE, not published: write the INSPIRE record only (recid, empty citation key, citation counts; bibliographic information unchanged)
+preprint-record-line = INSPIRE { $recid }: { $title } ({ $author })
+preprint-mismatch = May be another paper: { $reasons }
+preprint-mismatch-title = the titles differ
+preprint-mismatch-firstAuthor = the first authors differ
+preprint-mismatch-recordIncomplete = INSPIRE's record has no title or first author
+preprint-records-written =
+  { $count ->
+    [one] Wrote the INSPIRE record of 1 item.
+   *[other] Wrote the INSPIRE record of { $count } items.
+  }
+preprint-records-shown = { $count } not written: shown in the item pane or a reader (select another item and check again)
+preprint-records-changed = { $count } not written: changed or deleted since the check, or with unsaved changes
+preprint-records-archive-conflict = { $count } without recid: Archive or Loc. in Archive holds another value
 
 # Collaboration Tags feature (FTR-COLLAB-TAGS)
 collab-tag-menu-add = Add Collaboration Tags
@@ -705,3 +757,270 @@ academic-tree-sort-name = Surname A–Z
 academic-tree-sort-year = Education year ↑
 academic-tree-sort-hint = Sort all students of each advisor on the same generation row, including those with co-advisors. Years match the degree on that advisor–student relationship. Unknown years come last; ties use surname. Conflicting family orders favor the advisor closest to the center.
 academic-tree-education-year = Education ended { $year } (INSPIRE)
+
+## arXiv browser window
+
+arxiv-browser-window =
+    .title = arXiv Browser
+arxiv-browser-empty = Create or choose a subscription to browse arXiv listings.
+arxiv-browser-subscription = Subscription
+arxiv-browser-chip-hint = Click: only this category. Ctrl/Cmd+click: add or remove one. Shift+click: a range. Click the only one chosen again: all.
+arxiv-browser-subscription-new = New…
+arxiv-browser-subscription-edit = Edit…
+arxiv-browser-subscription-delete = Delete
+arxiv-browser-subscription-delete-confirm = Delete the subscription “{ $name }”?
+arxiv-browser-subscription-default-name = Subscription { $number }
+arxiv-browser-editor-title-new = New subscription
+arxiv-browser-editor-title-edit = Edit subscription
+arxiv-browser-editor-name = Name
+arxiv-browser-editor-search = Search categories (name or identifier)
+arxiv-browser-editor-selected = Chosen (their listings are shown in this order)
+arxiv-browser-editor-none-selected = No category chosen yet.
+arxiv-browser-editor-whole-archive = All of { $archive } ({ $count } categories, one listing page)
+arxiv-browser-editor-alias = the same listing as { $canonical }
+arxiv-browser-editor-move-up = Move up
+arxiv-browser-editor-move-down = Move down
+arxiv-browser-editor-remove = Remove
+arxiv-browser-editor-sections = Show:
+arxiv-browser-section-new = New submissions
+arxiv-browser-section-cross = Cross-lists
+arxiv-browser-section-replace = Replacements
+arxiv-browser-editor-estimate =
+    A first load sends arXiv, for new: { $new ->
+        [1] 1 request
+       *[other] { $new } requests (at least { $newTime })
+    }; for recent: { $recent } requests (at least { $recentTime }); for catch-up: { $catchup ->
+        [1] 1 request
+       *[other] { $catchup } requests
+    } per announcement day. arXiv asks for 15 s between requests; days already loaded come from the cache.
+arxiv-browser-editor-many = Many categories: a first recent load takes at least { $time }. If they lie in one archive, subscribing to the whole archive needs one request per day (its listing then covers all its categories); or split them into several subscriptions.
+arxiv-browser-editor-save = Save
+arxiv-browser-editor-cancel = Cancel
+arxiv-browser-duration-seconds = { $count } s
+arxiv-browser-duration-minutes = { $count } min
+arxiv-browser-duration-minutes-seconds = { $minutes } min { $seconds } s
+arxiv-browser-days = Choose the days to list
+arxiv-browser-days-newest = Newest day
+arxiv-browser-days-recent = Last 5 announcement days
+arxiv-browser-days-week = This week
+arxiv-browser-days-unread = Unread days
+arxiv-browser-days-unread-none = No unread days
+arxiv-browser-days-unread-legend = Blue dot: not read yet.
+arxiv-browser-days-day-unread = { $date }, not read yet
+arxiv-browser-days-mark-read = Mark read
+arxiv-browser-days-mark-unread = Mark unread
+arxiv-browser-days-mark-all-read = Mark all read
+arxiv-browser-reading-file-unreadable = The file of the days marked read ({ $path }) could not be read. Days marked now are kept only until Zotero closes.
+arxiv-browser-reading-file-kept = The file of the days marked read could not be read. It was kept as { $path }, and days are marked afresh.
+arxiv-browser-days-range = { $first } – { $last } ({ $count } days)
+arxiv-browser-days-previous-month = Previous month
+arxiv-browser-days-next-month = Next month
+arxiv-browser-days-hint = Click a day; Ctrl/⌘+click adds or removes one; Shift+click picks a range.
+arxiv-browser-days-none = No day picked.
+arxiv-browser-days-picked = { $days ->
+        [one] 1 day picked
+       *[other] { $days } days picked
+    }; if not cached, { $requests ->
+        [one] 1 request
+       *[other] { $requests } requests
+    }, at least { $time }.
+arxiv-browser-days-estimate = If not cached: { $requests ->
+        [one] 1 request
+       *[other] { $requests } requests
+    }, at least { $time }
+arxiv-browser-days-load = Load
+arxiv-browser-reload = Reload
+arxiv-browser-reload-tooltip = Load the chosen days again, fetching the newest listing afresh when it is among them (other days come from the cache)
+arxiv-browser-cancel = Cancel
+arxiv-browser-continue = Continue
+arxiv-browser-status-waiting = Keeping arXiv’s request interval: continuing in { $seconds } s.
+arxiv-browser-status-paused = arXiv is unavailable for now; retrying at { $time }.
+arxiv-browser-status-sending = Fetching from arXiv…
+arxiv-browser-status-queued = { $count ->
+        [one] (1 more request queued)
+       *[other] ({ $count } more requests queued)
+    }
+arxiv-browser-status-loading = Loading…
+arxiv-browser-status-loaded = { $days ->
+        [one] 1 day
+       *[other] { $days } days
+    }, { $papers ->
+        [one] 1 paper
+       *[other] { $papers } papers
+    }.
+arxiv-browser-status-stopped = Loading stopped: { $reason }.
+arxiv-browser-status-cancelled = Loading cancelled.
+arxiv-browser-status-previous-issue = The newest listing is still the previous one (arXiv may have postponed the announcement); try Reload later.
+arxiv-browser-status-no-announcement = No announcement on { $dates }.
+arxiv-browser-nothing-loaded = Nothing loaded.
+arxiv-browser-reason-cancelled = cancelled
+arxiv-browser-reason-timeout = arXiv did not answer in time
+arxiv-browser-reason-offline = Zotero is offline
+arxiv-browser-reason-network = no connection to arXiv
+arxiv-browser-reason-unavailable = arXiv is unavailable for now
+arxiv-browser-reason-forbidden = arXiv refused the request
+arxiv-browser-reason-stopped = not requested after an earlier refusal
+arxiv-browser-reason-http = unexpected answer from arXiv
+arxiv-browser-reason-out-of-range = older than arXiv’s 90 days of catch-up listings
+arxiv-browser-reason-parse = the page could not be read
+arxiv-browser-reason-check = the pages of the day did not add up
+arxiv-browser-reason-mixed-dates = the pages showed different days
+arxiv-browser-day-count = { $count ->
+        [one] 1 paper
+       *[other] { $count } papers
+    }
+arxiv-browser-day-filtered = { $shown } of { $count } papers
+arxiv-browser-continued = (continued)
+arxiv-browser-day-empty = No papers in the subscribed categories on this day.
+arxiv-browser-day-none-shown = None in the shown sections.
+arxiv-browser-day-none-chosen = None on the chosen categories' pages.
+arxiv-browser-day-no-match = None matches the filter.
+arxiv-browser-day-failed = This day was not fetched.
+arxiv-browser-day-incomplete = This day was not fetched completely.
+arxiv-browser-day-loading = Still fetching: { $specs } …
+arxiv-browser-day-spec-failed = { $spec }: { $reason }
+arxiv-browser-day-spec-stale = { $spec }: arXiv still shows { $date }
+arxiv-browser-day-spec-cached = { $spec }: copy from the cache (fetching failed: { $reason })
+arxiv-browser-retry = Retry
+arxiv-browser-sort = Sort
+arxiv-browser-sort-announcement = Announcement order
+arxiv-browser-sort-id-asc = arXiv ID ↑
+arxiv-browser-sort-id-desc = arXiv ID ↓
+arxiv-browser-sort-primary = Primary category
+arxiv-browser-filter = Filter: words or "phrases"
+arxiv-browser-search = Search arXiv
+arxiv-browser-search-tooltip = Search all of arXiv, newest submissions first (Enter). Words search all fields and must all match; arXiv’s syntax works too: au:witten, ti:tetraquark, abs:"chiral perturbation", cat:hep-ph, AND, OR, ANDNOT, ( ), submittedDate:[202601010000 TO 202612312359]
+arxiv-browser-search-clear = Clear the search and go back to the days listed
+arxiv-browser-search-running = Searching arXiv…
+arxiv-browser-search-none = arXiv found no papers.
+arxiv-browser-search-found = arXiv found { $total ->
+        [one] 1 paper
+       *[other] { $total } papers
+    }; { $fetched } fetched.
+arxiv-browser-search-limit = arXiv gives the first { $limit } only.
+arxiv-browser-search-refused = arXiv did not accept the search: { $message }
+arxiv-browser-quick-filter-local-tooltip = Show papers already in your Zotero library
+arxiv-browser-quick-filter-online-tooltip = Show papers not yet in your Zotero library
+arxiv-browser-page-size = Per page
+arxiv-browser-abstracts = Abstracts
+arxiv-browser-abstract-show = Abstract ▸
+arxiv-browser-abstract-hide = Abstract ▾
+arxiv-browser-page-previous = ‹ Previous
+arxiv-browser-page-next = Next ›
+arxiv-browser-papers = { $count ->
+        [one] 1 paper
+       *[other] { $count } papers
+    }
+arxiv-browser-section-tag-cross = cross-list
+arxiv-browser-section-tag-replace = replacement
+arxiv-browser-open-pdf = Open the PDF on arXiv (in your web browser)
+arxiv-browser-divider = Drag (or use ← and →) to change the widths of the list and the detail pane
+arxiv-browser-detail-empty = Choose a paper to see it here.
+arxiv-browser-copied-id = Copied { $id }
+arxiv-browser-bibtex-waiting = Fetching the BibTeX from arXiv (keeping its request interval)…
+arxiv-browser-bibtex-copied-inspire = Copied INSPIRE's BibTeX of { $id }
+arxiv-browser-bibtex-copied-arxiv = Copied arXiv's BibTeX of { $id } (not in INSPIRE)
+arxiv-browser-bibtex-copied-arxiv-unreachable = Copied arXiv's BibTeX of { $id } (INSPIRE could not be reached)
+arxiv-browser-bibtex-failed = Could not get the BibTeX of { $id }: { $reason }
+arxiv-browser-version-failed = Could not get version { $version } of { $id }: { $reason }
+arxiv-browser-inspire-link-not-found = { $id } is not in INSPIRE: no link copied
+arxiv-browser-inspire-link-unreachable = INSPIRE could not be reached: no link copied for { $id }
+arxiv-browser-detail-section-new = { $category }: new submission
+arxiv-browser-detail-section-cross = { $category }: cross-list
+arxiv-browser-detail-section-replace = { $category }: replacement
+arxiv-browser-detail-authors-limit = arXiv’s listing names at most 100 authors; the arXiv page has them all.
+arxiv-browser-detail-version = version { $version }
+arxiv-browser-detail-version-choose = Show another version of the paper (an older one is fetched from arXiv)
+arxiv-browser-detail-version-loading = fetching from arXiv…
+arxiv-browser-detail-announced = announced { $date }
+arxiv-browser-detail-submitted = submitted { $date }
+arxiv-browser-detail-comments = Comments:
+arxiv-browser-detail-journal-ref = Journal reference:
+arxiv-browser-detail-in-library = ✓ In your library
+arxiv-browser-show-in-library = Show in library
+arxiv-browser-copy-id = Copy arXiv ID
+arxiv-browser-copy-bibtex = Copy BibTeX
+arxiv-browser-menu-select-all = Select All
+arxiv-browser-menu-open-link = Open Link in Web Browser
+arxiv-browser-menu-copy-link = Copy Link Address
+arxiv-browser-menu-copy-title = Copy Title
+arxiv-browser-menu-copy-abs-link = Copy Link to the arXiv Page
+arxiv-browser-copied-text = Copied
+arxiv-browser-open-pdf-button = PDF
+arxiv-browser-open-html = Open arXiv's HTML version in the web browser
+arxiv-browser-open-html-button = HTML
+arxiv-browser-open-html-snapshot = Open the saved HTML snapshot in Zotero
+arxiv-browser-html-menu = More for the HTML version
+arxiv-browser-html-menu-browser = Open in the Web Browser
+arxiv-browser-html-menu-save = Save HTML Snapshot to the Library
+arxiv-browser-html-menu-open = Open Snapshot in Zotero
+arxiv-browser-html-saving = Saving the HTML version of { $id }…
+arxiv-browser-html-saved = Saved the HTML version of { $id } (v{ $version })
+arxiv-browser-html-there = The HTML version of { $id } (v{ $version }) is already saved
+arxiv-browser-html-failed = The HTML version of { $id } was not saved: { $reason }
+arxiv-browser-html-no-html = arXiv has no HTML version of it
+arxiv-browser-html-capture = Zotero could not save the page
+arxiv-browser-html-no-version = the arXiv API did not give its version; try again later
+arxiv-browser-dot-add = Click to add this paper to your library
+arxiv-browser-dot-local = In your library; click to select it in the main window
+arxiv-browser-row-related = { $count ->
+    [one] Related to one item (click to relate it to more; remove relations in the item's Related section):
+   *[other] Related to { $count } items (click to relate it to more; remove relations in the item's Related section):
+}
+arxiv-browser-row-link = Click to choose the items to relate this paper to (a paper not in your library is added first)
+arxiv-browser-add = Add…
+arxiv-browser-add-journal = Add the journal version…
+arxiv-browser-link = Relate to items…
+arxiv-browser-adding = Adding { $id }…
+arxiv-browser-added = Added { $id } to { $target }
+arxiv-browser-note-journal-mismatch = The journal DOI given on arXiv belongs to another paper: added as the arXiv preprint.
+arxiv-browser-note-journal-not-found = The journal DOI could not be looked up: added as the arXiv preprint.
+arxiv-browser-note-no-pdf = The arXiv API did not answer: added from INSPIRE, without the PDF.
+arxiv-browser-note-no-journal-doi = arXiv gives no journal DOI for this paper: added as the arXiv preprint.
+arxiv-browser-pdf-failed = The PDF of { $id } was not attached: { $reason }
+arxiv-browser-pdf-not-pdf = arXiv did not send a PDF
+arxiv-browser-pdf-files-not-editable = the library does not allow files
+arxiv-browser-pdf-save = Zotero could not store the file
+arxiv-browser-in-library-already = { $id } is already in { $library }
+arxiv-browser-doi-only = { $library } has an item with the journal DOI given for { $id } on arXiv: { $titles }. Is it this paper?
+arxiv-browser-doi-only-add = Not this paper: add it
+arxiv-browser-inspire-unknown = INSPIRE could not be reached, so it is not known whether INSPIRE has { $id }.
+arxiv-browser-add-from-arxiv = Add from arXiv data
+arxiv-browser-add-from-arxiv-count = { $count ->
+        [one] Add 1 paper from arXiv data
+       *[other] Add { $count } papers from arXiv data
+    }
+arxiv-browser-try-later = Try later
+arxiv-browser-not-added = { $id } was not added: { $reason }
+arxiv-browser-not-added-in-library = already in the library
+arxiv-browser-not-added-inspire-unknown = INSPIRE could not be reached
+arxiv-browser-not-added-arxiv-unavailable = the arXiv API is not answering; try again later
+arxiv-browser-not-added-not-on-arxiv = the arXiv API does not know it
+arxiv-browser-not-added-library-unreadable = the library could not be read
+arxiv-browser-not-added-not-editable = the library cannot be edited
+arxiv-browser-linked = Related to “{ $title }”
+arxiv-browser-linked-several = Related to { $count } items
+arxiv-browser-undo-hint = (Edit → Undo, or Ctrl/Cmd+Z, takes it back)
+arxiv-browser-notice-close = Close
+arxiv-browser-batch-added = Added { $added } of { $total } papers to { $target }
+arxiv-browser-batch-not-added = Not added:
+arxiv-browser-batch-none-added = None of the { $total } papers was added
+arxiv-browser-batch-pdf-failed = PDF not attached:
+arxiv-browser-completion = { $count ->
+        [one] 1 preprint added recently has no INSPIRE record yet
+       *[other] { $count } preprints added recently have no INSPIRE record yet
+    }
+arxiv-browser-completion-check = Check now
+arxiv-browser-completion-checking = Asking INSPIRE about the preprints added recently…
+arxiv-browser-completion-none-found = INSPIRE has none of them yet.
+arxiv-browser-completion-failed = INSPIRE could not be reached for { $count ->
+        [one] 1 preprint
+       *[other] { $count } preprints
+    }; check again later.
+arxiv-browser-completion-unreachable = INSPIRE could not be reached; check again later.
+arxiv-browser-batch-cancelled = Cancelled: { $count ->
+        [one] 1 paper not added
+       *[other] { $count } papers not added
+    }
+arxiv-pdf-attachment-title = arXiv preprint PDF v{ $version }
+arxiv-html-snapshot-title = arXiv HTML v{ $version }

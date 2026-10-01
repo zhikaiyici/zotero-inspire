@@ -1,3 +1,6 @@
+import type { IdentityMismatch } from "../arxiv/inspireByArxiv";
+import type { CompletionEntry } from "./library/inspireCompletion";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Author Search Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,8 +114,15 @@ export interface InspireReferenceEntry {
   authorText: string;
   displayText: string;
   searchText: string;
+  /**
+   * In-library marks, recomputed from the library index (localStatus.ts):
+   * the first item with the paper's recid, all of them, or the library could
+   * not be read. Whether the item is related to the item shown is worked out
+   * when the list is drawn, as it depends on the item shown.
+   */
   localItemID?: number;
-  isRelated?: boolean;
+  localItemIDs?: number[];
+  localStatusUnknown?: boolean;
   /** FTR-RELATED-PAPERS: bibliographic coupling signal (how many shared references) */
   relatedSharedRefCount?: number;
   /** FTR-RELATED-PAPERS: up to a few shared reference titles for tooltip explanation */
@@ -199,7 +209,10 @@ export interface CitationGraphNode {
   authorLabel?: string; // "Author et al. (Year)" format
   year?: string;
   citationCount?: number;
+  /** In-library marks, as on InspireReferenceEntry */
   localItemID?: number;
+  localItemIDs?: number[];
+  localStatusUnknown?: boolean;
   isSeed: boolean;
 }
 
@@ -371,7 +384,8 @@ export type LocalCacheType =
   | "crossref"
   | "author_profile" // FTR-AUTHOR-PROFILE: Author profile cache (permanent)
   | "author_papers" // FTR-AUTHOR-PROFILE: Author papers list cache (permanent)
-  | "pdfmap"; // FTR-PDF-PARSE-PERSIST: parsed PDF reference-label mapping (invalidated by file mtime/size)
+  | "pdfmap" // FTR-PDF-PARSE-PERSIST: parsed PDF reference-label mapping (invalidated by file mtime/size)
+  | "arxiv_listing"; // arXiv browser: listings of announcement days (dropped 100 days after the announcement)
 
 /**
  * Local cache file structure for persistent storage.
@@ -429,6 +443,16 @@ export interface PreprintCheckResult {
   status: "published" | "unpublished" | "error" | "not_in_inspire";
   publicationInfo?: PublicationInfo;
   error?: string;
+  /**
+   * INSPIRE has a record of the arXiv ID: reasons to doubt that it is the
+   * item's paper (its title or first author differs); none: it is
+   */
+  mismatches?: IdentityMismatch[];
+  /**
+   * An unpublished record, and the item has no recid yet: the entry that
+   * "write INSPIRE record" writes (attachInspireRecord)
+   */
+  completion?: CompletionEntry;
 }
 
 /**
@@ -440,6 +464,7 @@ export interface PreprintCheckSummary {
   unpublished: number; // Still preprints
   errors: number; // Check failures
   notInInspire: number; // Not found in INSPIRE
+  withoutRecid: number; // Unpublished, with a record the item does not name yet
   results: PreprintCheckResult[];
 }
 
@@ -456,13 +481,23 @@ export interface PreprintUpdateOptions {
 }
 
 /**
- * Single entry in the unified preprint watch cache.
+ * Single entry in the unified preprint watch cache: INSPIRE's last answer
+ * about one arXiv ID (shared by every item and library with that ID).
  */
 export interface PreprintWatchEntry {
   arxivId: string; // Stable identifier (e.g., "2301.12345")
-  itemId?: number; // Zotero item ID for fast lookup (may become stale)
-  lastChecked: number; // Timestamp of last INSPIRE check
-  status: "unpublished" | "published" | "error";
+  /**
+   * When INSPIRE gave this answer (ms since 1970); answers reused from the
+   * cache do not change it. 0: not answered since the cache format changed
+   * (the entry is kept, but counts as never checked).
+   */
+  lastChecked: number;
+  /**
+   * published: the record has a journal publication; unpublished: a record
+   * without one; not_in_inspire: no record. Failed requests are not stored;
+   * "error" occurs only in entries carried over from cache version 1.
+   */
+  status: "unpublished" | "published" | "not_in_inspire" | "error";
   publicationInfo?: PublicationInfo; // Only set when status === "published"
 }
 
@@ -472,7 +507,5 @@ export interface PreprintWatchEntry {
  */
 export interface PreprintWatchCache {
   version: number; // Cache format version
-  lastFullScan: number; // Timestamp of last full library scan
-  lastCheck: number; // Timestamp of last batch check
   entries: PreprintWatchEntry[];
 }

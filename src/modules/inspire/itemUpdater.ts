@@ -1,5 +1,6 @@
 import { config } from "../../../package.json";
 import { getString } from "../../utils/locale";
+import { addArxivCategoryTag } from "./arxivTag";
 import { getPref, setPref } from "../../utils/prefs";
 import { getPrimarySelectedCollection } from "../../utils/zoteroPaneSelection";
 import { ProgressWindowHelper } from "zotero-plugin-toolkit";
@@ -7,34 +8,41 @@ import {
   DOI_ORG_URL,
   INSPIRE_API_BASE,
   INSPIRE_NOTE_HTML_ENTITIES,
-  INSPIRE_LITERATURE_URL,
 } from "./constants";
 
 // Plugin icon for progress windows (PNG format required for ProgressWindow headline)
 const PLUGIN_ICON = `chrome://${config.addonRef}/content/icons/inspire-icon.png`;
+
+// How long the counts of a preprint check stay on screen (five numbers to read)
+const PREPRINT_SUMMARY_DISPLAY_MS = 10000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RegExp Constants (hoisted to module level for performance)
 // ─────────────────────────────────────────────────────────────────────────────
 const ARXIV_EXTRA_LINE_REGEX = /^.*(arXiv:|_eprint:).*$(\n|)/gim;
 
-const iconCross = "chrome://zotero/skin/cross.png";
 import type {
   jsobject,
   ItemWithPendingInspireNote,
   FavoritePaper,
 } from "./types";
 import {
-  getInspireMeta,
+  lookupInspireMeta,
   getCrossrefCount,
-  getCNKICount, fetchBibTeX,
+  getCNKICount,
+  fetchBibTeX,
 } from "./metadataService";
-import { deriveRecidFromItem, copyToClipboard } from "./apiUtils";
+import {
+  deriveRecidFromItem,
+  copyToClipboard,
+  inspireLiteratureUrl,
+} from "./apiUtils";
 import { localCache } from "./localCache";
 import {
   fetchReferencesEntries,
   enrichReferencesEntries,
 } from "./referencesService";
+import { itemCitationKey } from "./library/itemCitationKey";
 import { inspireFetch } from "./rateLimiter";
 import {
   resolveInspireItemType,
@@ -51,17 +59,23 @@ import {
   getFieldProtectionConfig,
   showSmartUpdatePreviewDialog,
   mergeCreatorsWithProtectedNames,
+  creatorsForUpdate,
   type FieldChange,
 } from "./smartUpdate";
 import {
   isUnpublishedPreprint,
   findUnpublishedPreprints,
   batchCheckPublicationStatus,
+  beginManualCheck,
   buildCheckSummary,
   batchUpdatePreprints,
   type PreprintCheckResult,
   type PreprintCheckSummary,
 } from "./preprintWatchService";
+import {
+  writeInspireCompletion,
+  type CompletionEntry,
+} from "./library/inspireCompletion";
 import {
   isCollabTagEnabled,
   isCollabTagAutoEnabled,
@@ -69,67 +83,122 @@ import {
   batchAddCollabTags,
 } from "./collabTagService";
 import { createAbortController } from "./utils";
+import { openRunProgressWindow } from "./runProgressWindow";
 import { copyFundingInfo } from "./funding";
 // NOTE: CitationGraphDialog is imported lazily to avoid circular dependencies.
+
+// Zotero's own uses of Escape in the main window (zoteroPane.js, Zotero 10):
+// in a tab other than the library it moves the focus back into the reader;
+// in the collection tree it clears the collection filter, and with no filter
+// it only focuses the tree again, yet marks the key as handled all the same
+
+function isReaderTabSelected(): boolean {
+  const tabs = (Zotero.getMainWindow() as any)?.Zotero_Tabs;
+  return typeof tabs?.selectedIndex === "number" && tabs.selectedIndex > 0;
+}
+
+function isCollectionTreeWithoutFilter(event: KeyboardEvent): boolean {
+  const target = event.target as Element | null;
+  if (!target?.closest?.("#collection-tree")) {
+    return false;
+  }
+  const filter = target.ownerDocument?.getElementById(
+    "zotero-collections-search",
+  ) as HTMLInputElement | null;
+  return !filter?.value;
+}
+
+/** Input types in which nothing is typed (a checkbox, a button, …) */
+const NON_TEXT_INPUT_TYPES = new Set([
+  "checkbox",
+  "radio",
+  "button",
+  "submit",
+  "reset",
+  "image",
+  "file",
+  "color",
+  "range",
+  "hidden",
+]);
+
+/** The key event comes from a text field, whose own Escape it is */
+function isInTextField(event: Event): boolean {
+  return event.composedPath().some((node) => {
+    const element = node as HTMLElement;
+    return (
+      (element.localName === "input" &&
+        !NON_TEXT_INPUT_TYPES.has((element as HTMLInputElement).type)) ||
+      element.localName === "textarea" ||
+      element.isContentEditable === true
+    );
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ZInspire Class - Batch Update Controller
 // ─────────────────────────────────────────────────────────────────────────────
 
-export class ZInspire {
-  current: number;
-  toUpdate: number;
-  itemsToUpdate: Zotero.Item[];
-  numberOfUpdatedItems: number;
+/**
+ * A run the user can cancel: a metadata update, a reference-cache download
+ * or a preprint check. Each run has its own cancelled flag, so starting a
+ * run never resumes one the user cancelled.
+ */
+interface CancellableRun {
+  cancelled: boolean;
+  /** Escape in the main window cancels it (runs started from a menu) */
+  cancelByEscape: boolean;
+  /** Called once, when the run is cancelled */
+  onCancel?: () => void;
+}
+
+/**
+ * One metadata update run. It has its own counts, so items of a cancelled
+ * run that finish late are not reported by the next run.
+ */
+interface UpdateRun extends CancellableRun {
+  total: number;
+  /** Aborts the run's INSPIRE requests when the run is cancelled */
+  controller: AbortController | null;
+  /** Items taken off the queue and finished */
+  completed: number;
+  /** Items saved with INSPIRE data */
   counter: number;
-  CrossRefcounter: number;
+  crossRefCounter: number;
   CNKIcounter: number;
   noRecidCount: number;
-  error_norecid: boolean;
-  error_norecid_shown: boolean;
-  final_count_shown: boolean;
-  progressWindow?: ProgressWindowHelper;
+  /** Items whose request got no answer: failed, or aborted by the cancel */
+  unanswered: number;
+  /** Items whose request failed (no network, server error) */
+  failed: number;
+}
+
+/**
+ * How the INSPIRE request for one item ended: answered (record or no record),
+ * failed (no network, server error) or aborted (update cancelled). An item
+ * whose request got no answer is left as it is.
+ */
+type ItemRequestOutcome = "answered" | "failed" | "aborted";
+
+/** Where the preprint results dialog and its outcome are shown */
+export interface ReviewWindow {
+  /** The window's document (default: the main window's) */
+  document?: Document;
+  /** Tell the outcome (default: a popup by the main window) */
+  notify?: (lines: string[]) => void;
+}
+
+export class ZInspire {
   private closedProgressWindows = new WeakSet<ProgressWindowHelper>();
-  private updateController: AbortController | null = null;
-  private isCancelled: boolean = false;
+  /** Runs that have started and not ended yet */
+  private activeRuns = new Set<CancellableRun>();
   private escapeHandler?: (e: KeyboardEvent) => void;
 
-  constructor(
-    current: number = -1,
-    toUpdate: number = 0,
-    itemsToUpdate: Zotero.Item[] = [],
-    numberOfUpdatedItems: number = 0,
-    counter: number = 0,
-    CrossRefcounter: number = 0,
-    CNKIcounter: number = 0,
-    noRecidCount: number = 0,
-    error_norecid: boolean = false,
-    error_norecid_shown: boolean = false,
-    final_count_shown: boolean = false,
-  ) {
-    this.current = current;
-    this.toUpdate = toUpdate;
-    this.itemsToUpdate = itemsToUpdate;
-    this.numberOfUpdatedItems = numberOfUpdatedItems;
-    this.counter = counter;
-    this.CrossRefcounter = CrossRefcounter;
-    this.CNKIcounter = CNKIcounter;
-    this.noRecidCount = noRecidCount;
-    this.error_norecid = error_norecid;
-    this.error_norecid_shown = error_norecid_shown;
-    this.final_count_shown = final_count_shown;
-  }
-
-  private closeActiveProgressWindow(
-    progressWindow: ProgressWindowHelper | undefined = this.progressWindow,
-  ): void {
-    if (!progressWindow || this.closedProgressWindows.has(progressWindow)) {
+  private closeActiveProgressWindow(progressWindow: ProgressWindowHelper) {
+    if (this.closedProgressWindows.has(progressWindow)) {
       return;
     }
     this.closedProgressWindows.add(progressWindow);
-    if (this.progressWindow === progressWindow) {
-      this.progressWindow = undefined;
-    }
     try {
       progressWindow.close();
     } catch (error) {
@@ -139,159 +208,145 @@ export class ZInspire {
     }
   }
 
-  resetState(operation: string) {
-    if (operation === "initial") {
-      this.closeActiveProgressWindow();
-      this.current = -1;
-      this.toUpdate = 0;
-      this.itemsToUpdate = [];
-      this.numberOfUpdatedItems = 0;
-      this.counter = 0;
-      this.CrossRefcounter = 0;
-      this.CNKIcounter = 0;
-      this.noRecidCount = 0;
-      this.error_norecid = false;
-      this.error_norecid_shown = false;
-      this.final_count_shown = false;
-    } else {
-      // if (this.error_norecid) {
-      if (operation !== "citations") {
-        this.closeActiveProgressWindow();
-        if (this.error_norecid && !this.error_norecid_shown) {
-          const progressWindowNoRecid = new ztoolkit.ProgressWindow(
-            config.addonName,
-            { closeOnClick: true },
-          );
-          progressWindowNoRecid.changeHeadline("INSPIRE recid not found");
-          const itemWord = this.noRecidCount === 1 ? "item" : "items";
-          if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
-            progressWindowNoRecid.createLine({
-              icon: iconCross,
-              text: `${this.toUpdate} ${this.toUpdate === 1 ? " item" : " items"} processed.\nNo INSPIRE recid was found for ${this.noRecidCount} ${itemWord}. Tagged with '${getPref("tag_norecid")}'.`,
-            });
-          } else {
-            progressWindowNoRecid.createLine({
-              icon: iconCross,
-              text: `${this.toUpdate} ${this.toUpdate === 1 ? " item" : " items"} processed.\nNo INSPIRE recid was found for ${this.noRecidCount} ${itemWord}.`,
-            });
-          }
-          progressWindowNoRecid.show();
-          progressWindowNoRecid.startCloseTimer(3000);
-          this.error_norecid_shown = true;
-        } else {
-          const progressWindowFinished = new ztoolkit.ProgressWindow(
-            config.addonName,
-            { closeOnClick: true },
-          );
-          progressWindowFinished.changeHeadline("INSPIRE metadata retrieved");
-          progressWindowFinished.createLine({
-            icon: PLUGIN_ICON,
-            text: `INSPIRE metadata updated for ${this.toUpdate} ${this.toUpdate === 1 ? " item" : " items"}.`,
+  /**
+   * The notice at the end of an update: the items without an INSPIRE record
+   * if there were any, else how many items were updated
+   */
+  private showFinalNotice(
+    operation: string,
+    counts: Pick<UpdateRun, "counter" | "crossRefCounter" | "CNKIcounter" | "noRecidCount">,
+  ) {
+    const progressWindow = new ztoolkit.ProgressWindow(config.addonName, {
+      closeOnClick: true,
+    });
+    progressWindow.win.changeHeadline("Finished", PLUGIN_ICON);
+    if (operation === "full" || operation === "noabstract") {
+      if (counts.noRecidCount > 0) {
+        const icon = "chrome://zotero/skin/cross.png";
+        // const progressWindow = new ztoolkit.ProgressWindow(
+        //   config.addonName,
+        //   { closeOnClick: true },
+        // );
+        progressWindow.changeHeadline("INSPIRE recid not found");
+        const itemWord = counts.noRecidCount === 1 ? "item" : "items";
+        if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
+          progressWindow.createLine({
+            icon: icon,
+            text: `No INSPIRE recid was found for ${counts.noRecidCount} ${itemWord}. Tagged with '${getPref("tag_norecid")}'.`,
           });
-          progressWindowFinished.show();
-          progressWindowFinished.startCloseTimer(3000);
+        } else {
+          progressWindow.createLine({
+            icon: icon,
+            text: `No INSPIRE recid was found for ${counts.noRecidCount} ${itemWord}.`,
+          });
         }
       } else {
-        if (!this.final_count_shown) {
-          const progressWindow = new ztoolkit.ProgressWindow(config.addonName, {
-            closeOnClick: true,
-          });
-          let unUpdated = this.toUpdate - this.counter - this.CrossRefcounter - this.CNKIcounter;
-          progressWindow.win.changeHeadline("Finished", PLUGIN_ICON);
-          // if (operation === "full" || operation === "noabstract") {
-          //   this.progressWindow.createLine({
-          //     icon: PLUGIN_ICON,
-          //     text: "INSPIRE metadata updated for " + this.counter + " items.",
-          //     progress: 100,
-          //   });
-          // } else if (operation === "citations") {
-          progressWindow.createLine({
-            icon: unUpdated > 0 ? iconCross : PLUGIN_ICON,
-            text: this.toUpdate + (this.toUpdate === 1 ? " item" : " items") + " processed.\n" +
-              (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
-              (this.CrossRefcounter > 0 ? "CrossRef citations updated for " + this.CrossRefcounter + (this.CrossRefcounter === 1 ? " item.\n" : " items.\n") : "") +
-              (this.CNKIcounter > 0 ? "CNKI citations updated for " + this.CNKIcounter + (this.CNKIcounter === 1 ? " item.\n" : " items.\n") : "") +
-              (unUpdated > 0 ? "No citation data was found for " + unUpdated + (unUpdated === 1 ? " item." : " items.") : ""),
-            progress: 100,
-          });
-          //}
-          progressWindow.show();
-          progressWindow.startCloseTimer(3000);
-          this.final_count_shown = true;
-        }
+        progressWindow.createLine({
+          icon: PLUGIN_ICON,
+          text: "INSPIRE metadata updated for " + counts.counter + (counts.counter === 1 ? " item." : " items."),
+          progress: 100,
+        });
       }
-      // const iconTick = "chrome://zotero/skin/tick.png";
-      // const iconCross = "chrome://zotero/skin/cross.png";
-      // if (operation != "citations") {
-      //   this.progressWindow.close();
-      //   // const icon = "chrome://zotero/skin/cross.png";
-      //   //ztoolkit.log("hello");
-      //   const progressWindowNoRecid = new ztoolkit.ProgressWindow(config.addonName, { closeOnClick: true });
-      //   let unUpdated = this.toUpdate - this.counter;
-      //   if (getPref("tag_enable") && getPref("tag_norecid") !== "") {
-      //     progressWindowNoRecid.createLine({
-      //       icon: unUpdated > 0 ? iconCross : iconTick,
-      //       text: this.toUpdate + (this.toUpdate === 1 ? " item" : " items") + " processed.\n" +
-      //         (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
-      //         (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated === 1 ? " item, which has" : " items, which have") + " been tagged with '" + getPref("tag_norecid") + "'." : "")
-      //     });
-      //   } else {
-      //     progressWindowNoRecid.createLine({
-      //       icon: unUpdated > 0 ? iconCross : iconTick,
-      //       text: this.toUpdate + (this.toUpdate === 1 ? " item" : " items") + " processed.\n" +
-      //         (this.counter > 0 ? "INSPIRE metadata updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
-      //         (unUpdated > 0 ? "No INSPIRE recid was found for " + unUpdated + (unUpdated === 1 ? " item, which has" : " items, which have") + " been tagged with '" + getPref("tag_norecid") + "'." : "")
-      //     });
-      //   }
-      //   progressWindowNoRecid.show();
-      //   progressWindowNoRecid.startCloseTimer(8000);
-      //   this.error_norecid_shown = true;
-      // } else {
-      //   if (!this.final_count_shown) {
-      //     /// const icon = "chrome://zotero/skin/tick.png";
-      //     this.progressWindow = new ztoolkit.ProgressWindow(config.addonName, {
-      //       closeOnClick: true,
-      //     });
-      //     let unUpdated = this.toUpdate - this.counter - this.CrossRefcounter - this.CNKIcounter;
-      //     this.progressWindow.createLine({
-      //       icon: unUpdated > 0 ? iconCross : iconTick,
-      //       text: this.toUpdate + (this.toUpdate === 1 ? " item" : " items") + " processed.\n" +
-      //         (this.counter > 0 ? "INSPIRE citations updated for " + this.counter + (this.counter === 1 ? " item.\n" : " items.\n") : "") +
-      //         (this.CrossRefcounter > 0 ? "CrossRef citations updated for " + this.CrossRefcounter + (this.CrossRefcounter === 1 ? " item.\n" : " items.\n") : "") +
-      //         (this.CNKIcounter > 0 ? "CNKI citations updated for " + this.CNKIcounter + (this.CNKIcounter === 1 ? " item.\n" : " items.\n") : "") +
-      //         (unUpdated > 0 ? "No citation data was found for " + unUpdated + (unUpdated === 1 ? " item." : " items.") : ""),
-      //       progress: 100
-      //     });
-      //     this.progressWindow.show();
-      //     this.progressWindow.startCloseTimer(4000);
-      //     this.final_count_shown = true;
-      //   }
-      // }
+      progressWindow.show();
+      progressWindow.startCloseTimer(3000);
+    } else if (operation === "citations") {
+      progressWindow.createLine({
+        icon: PLUGIN_ICON,
+        text:
+          "INSPIRE citations updated for " +
+          counts.counter +
+          (counts.counter === 1 ? " item;\n" : " items;\n") +
+          "CrossRef citations updated for " +
+          counts.crossRefCounter +
+          (counts.crossRefCounter === 1 ? " item;\n" : " items;\n") +
+          "CNKI citations updated for " +
+          counts.CNKIcounter +
+          (counts.CNKIcounter === 1 ? " item." : " items."),
+        progress: 100,
+      });
     }
+    progressWindow.show();
+    progressWindow.startCloseTimer(3000);
   }
 
+  /** Cancel every run that is going */
   cancelUpdate() {
-    this.isCancelled = true;
-    this.updateController?.abort();
+    for (const run of this.activeRuns) {
+      if (!run.cancelled) {
+        run.cancelled = true;
+        run.onCancel?.();
+      }
+    }
+    this.removeEscapeListener();
+  }
+
+  private startRun<T extends CancellableRun>(run: T): T {
+    this.activeRuns.add(run);
+    if (run.cancelByEscape) {
+      this.setupEscapeListener();
+    }
+    return run;
+  }
+
+  /** Ends a run; Escape stays with the runs still going */
+  private endRun(run: CancellableRun) {
+    if (!this.activeRuns.delete(run)) {
+      return;
+    }
+    for (const other of this.activeRuns) {
+      if (other.cancelByEscape && !other.cancelled) {
+        return;
+      }
+    }
     this.removeEscapeListener();
   }
 
   /**
-   * Setup global Escape key listener to cancel ongoing operations
+   * Listen for Escape in the main window to cancel the runs. Escape is left
+   * to whatever else uses it: a text field (the search box clears), a menu,
+   * dialog or panel that handles it and so prevents its default, and Zotero
+   * in a reader tab (it moves the focus back into the reader). The key is
+   * seen first (capture) and not stopped; the decision waits until it has
+   * been handled everywhere.
    */
   private setupEscapeListener() {
     this.removeEscapeListener(); // Clean up any existing listener
-    this.escapeHandler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
+    const handler = (e: KeyboardEvent) => {
+      if (
+        e.key !== "Escape" ||
+        isInTextField(e) ||
+        isReaderTabSelected()
+      ) {
+        return;
+      }
+      // In the collection tree with no filter, Zotero marks the key as
+      // handled without using it; it still counts as handled if something
+      // before Zotero (e.g. a dialog) handled it. The filter is read before
+      // Zotero clears it.
+      let unusedByZotero = false;
+      const target = e.target as EventTarget | null;
+      const seeTargetReached = (reached: Event) => {
+        unusedByZotero = !reached.defaultPrevented;
+      };
+      if (isCollectionTreeWithoutFilter(e)) {
+        target?.addEventListener("keydown", seeTargetReached, true);
+      }
+      setTimeout(() => {
+        target?.removeEventListener("keydown", seeTargetReached, true);
+        // Not if the listener was removed meanwhile (the runs ended)
+        if (
+          (e.defaultPrevented && !unusedByZotero) ||
+          this.escapeHandler !== handler
+        ) {
+          return;
+        }
         this.cancelUpdate();
         Zotero.debug(
           `[${config.addonName}] Operation cancelled via Escape key`,
         );
-      }
+      }, 0);
     };
-    // Use Zotero main window for global key capture
+    this.escapeHandler = handler;
     const win = Zotero.getMainWindow();
     if (win) {
       win.addEventListener("keydown", this.escapeHandler, true);
@@ -312,28 +367,16 @@ export class ZInspire {
   }
 
   updateSelectedItems(operation: string) {
-    this.resetState("initial");
-    this.isCancelled = false;
-    this.setupEscapeListener();
     const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
-    this.toUpdate = items.length;
-    this.itemsToUpdate = items;
-    this.updateItemsConcurrent(operation);
+    this.updateItemsConcurrent(items, operation, true);
   }
 
   updateSelectedCollection(operation: string) {
-    this.resetState("initial");
-    this.isCancelled = false;
-    this.setupEscapeListener();
     const collection = getPrimarySelectedCollection(
       Zotero.getActiveZoteroPane(),
     );
     if (collection) {
-      this.itemsToUpdate = collection.getChildItems();
-      this.toUpdate = this.itemsToUpdate.length;
-      this.updateItemsConcurrent(operation);
-    } else {
-      this.removeEscapeListener();
+      this.updateItemsConcurrent(collection.getChildItems(), operation, true);
     }
   }
 
@@ -541,9 +584,6 @@ export class ZInspire {
         );
         return;
       }
-      // Reset cancel state and setup Escape listener
-      this.isCancelled = false;
-      this.setupEscapeListener();
       Zotero.debug(
         `[${config.addonName}] downloadReferencesCacheForSelection: calling prefetch for ${regularItems.length} items`,
       );
@@ -552,8 +592,6 @@ export class ZInspire {
       Zotero.debug(
         `[${config.addonName}] downloadReferencesCacheForSelection: error: ${err}`,
       );
-    } finally {
-      this.removeEscapeListener();
     }
   }
 
@@ -589,9 +627,6 @@ export class ZInspire {
         );
         return;
       }
-      // Reset cancel state and setup Escape listener
-      this.isCancelled = false;
-      this.setupEscapeListener();
       Zotero.debug(
         `[${config.addonName}] downloadReferencesCacheForCollection: calling prefetch for ${items.length} ${items.length === 1 ? "item" : "items"}`,
       );
@@ -600,43 +635,44 @@ export class ZInspire {
       Zotero.debug(
         `[${config.addonName}] downloadReferencesCacheForCollection: error: ${err}`,
       );
-    } finally {
-      this.removeEscapeListener();
     }
   }
 
   async updateItems(items: Zotero.Item[], operation: string) {
-    this.resetState("initial");
-    this.isCancelled = false;
-    // Abort any previous update run
-    this.updateController?.abort();
-    this.updateController = createAbortController() ?? null;
-
-    const filteredItems = items.filter((item) => item.isRegularItem());
-    this.itemsToUpdate = filteredItems;
-    this.toUpdate = filteredItems.length;
-    this.updateItemsConcurrent(operation);
+    // Updates of newly added papers run in the background: Escape in the
+    // main window is left to Zotero
+    this.updateItemsConcurrent(
+      items.filter((item) => item.isRegularItem()),
+      operation,
+      false,
+    );
   }
 
   /**
    * Concurrent item processor with controlled parallelism
    */
-  private async updateItemsConcurrent(operation: string) {
+  private async updateItemsConcurrent(
+    items: Zotero.Item[],
+    operation: string,
+    cancelByEscape: boolean,
+  ) {
     const CONCURRENCY = 3;
-    let completed = 0;
-    const total = this.itemsToUpdate.length;
+    const total = items.length;
 
     if (!total) {
-      this.resetState(operation);
+      this.showFinalNotice(operation, {
+        counter: 0,
+        crossRefCounter: 0,
+        CNKIcounter: 0,
+        noRecidCount: 0,
+      });
       return;
     }
 
     // Show initial progress
-    const progressWindow = new ztoolkit.ProgressWindow(config.addonName, {
-      closeOnClick: true,
-      closeTime: -1,
+    const progressWindow = openRunProgressWindow(config.addonName, {
+      onEscape: () => this.cancelUpdate(),
     });
-    this.progressWindow = progressWindow;
     // Note: Zotero 7 ProgressWindow headline does not display icons
     // Use icon in createLine instead to show plugin logo
     progressWindow.createLine({
@@ -646,42 +682,64 @@ export class ZInspire {
     });
     progressWindow.show();
 
+    const controller = createAbortController() ?? null;
+    const run = this.startRun<UpdateRun>({
+      cancelled: false,
+      cancelByEscape,
+      onCancel: () => controller?.abort(),
+      total,
+      controller,
+      completed: 0,
+      counter: 0,
+      crossRefCounter: 0,
+      CNKIcounter: 0,
+      noRecidCount: 0,
+      unanswered: 0,
+      failed: 0,
+    });
+
     // Create a queue of pending items
-    const queue = [...this.itemsToUpdate];
+    const queue = [...items];
     let index = 0;
 
     const worker = async () => {
-      while (index < queue.length && !this.isCancelled) {
+      while (index < queue.length && !run.cancelled) {
         const currentIndex = index++;
         const item = queue[currentIndex];
 
         if (!item || !item.isRegularItem()) {
-          completed++;
+          run.completed++;
           continue;
         }
 
         try {
-          await this.updateItemInternal(
-            item,
-            operation,
-            this.updateController?.signal,
-          );
+          const outcome = await this.updateItemInternal(item, operation, run);
+          if (outcome !== "answered") {
+            run.unanswered++;
+            if (outcome === "failed") run.failed++;
+          }
         } catch (err) {
           Zotero.debug(
             `[${config.addonName}] updateItemsConcurrent: error updating item ${item.id}: ${err}`,
           );
         }
 
-        completed++;
+        run.completed++;
 
-        // Update progress
-        if (!this.isCancelled) {
-          const percent = Math.round((completed / total) * 100);
-          progressWindow.changeLine({
-            icon: PLUGIN_ICON,
-            text: `Processing ${completed} of ${total} ${total === 1 ? "item" : "items"}...`,
-            progress: percent,
-          });
+        // Update progress; a failure here must not end the run
+        if (!run.cancelled) {
+          const percent = Math.round((run.completed / total) * 100);
+          try {
+            progressWindow.changeLine({
+              icon: PLUGIN_ICON,
+              text: `Processing ${run.completed} of ${total} ${total === 1 ? "item" : "items"}...`,
+              progress: percent,
+            });
+          } catch (err) {
+            Zotero.debug(
+              `[${config.addonName}] updateItemsConcurrent: progress update failed: ${err}`,
+            );
+          }
         }
       }
     };
@@ -699,40 +757,61 @@ export class ZInspire {
 
       await Promise.all(workers);
       Zotero.debug(
-        `[${config.addonName}] updateItemsConcurrent: all workers finished, completed=${completed}`,
+        `[${config.addonName}] updateItemsConcurrent: all workers finished, completed=${run.completed}`,
       );
 
       // Finish
-      if (!this.isCancelled) {
+      if (!run.cancelled) {
         this.closeActiveProgressWindow(progressWindow);
-        this.numberOfUpdatedItems = total;
-        this.current = total - 1;
-        this.resetState(operation);
+        // Every run shows its own notice, also when runs overlap
+        this.showFinalNotice(operation, run);
+        if (run.failed > 0) {
+          this.showRequestFailedNotice(run.failed);
+        }
         Zotero.debug(
-          `[${config.addonName}] updateItemsConcurrent: done, counter=${this.counter}`,
+          `[${config.addonName}] updateItemsConcurrent: done, counter=${run.counter}, failed=${run.failed}`,
         );
       } else {
         // Cancelled - show stats
         this.closeActiveProgressWindow(progressWindow);
-        this.numberOfUpdatedItems = total;
-        this.current = total - 1;
-        this.showCancelledStats(completed, total);
+        this.showCancelledStats(run);
+        // Requests that failed before the cancel
+        if (run.failed > 0) {
+          this.showRequestFailedNotice(run.failed);
+        }
       }
     } catch (err) {
       Zotero.debug(
         `[${config.addonName}] updateItemsConcurrent: fatal error: ${err}`,
       );
       this.closeActiveProgressWindow(progressWindow);
-      this.numberOfUpdatedItems = this.toUpdate;
     } finally {
-      this.removeEscapeListener();
+      this.endRun(run);
     }
   }
 
   /**
-   * Show statistics when update was cancelled
+   * The notice that INSPIRE gave no answer for some items, which were left as
+   * they were (not tagged as having no INSPIRE record)
    */
-  private showCancelledStats(completed: number, total: number) {
+  private showRequestFailedNotice(count: number) {
+    const notice = new ztoolkit.ProgressWindow(config.addonName, {
+      closeOnClick: true,
+    });
+    notice.createLine({
+      icon: "chrome://zotero/skin/cross.png",
+      text: getString("update-request-failed", { args: { count } }),
+    });
+    notice.show();
+    notice.startCloseTimer(5000);
+  }
+
+  /**
+   * Show statistics when update was cancelled: the items processed (whatever
+   * INSPIRE answered; not the ones whose request the cancel aborted or that
+   * got no answer) and, of those, the items updated
+   */
+  private showCancelledStats(run: UpdateRun) {
     const statsWindow = new ztoolkit.ProgressWindow(config.addonName, {
       closeOnClick: true,
     });
@@ -740,7 +819,12 @@ export class ZInspire {
     statsWindow.createLine({
       icon: PLUGIN_ICON,
       text: getString("update-cancelled-stats", {
-        args: { completed: completed.toString(), total: total.toString() },
+        args: {
+          completed: (run.completed - run.unanswered).toString(),
+          total: run.total.toString(),
+          // CrossRef counts only items without an INSPIRE record
+          updated: (run.counter + run.crossRefCounter + run.CNKIcounter).toString(),
+        },
       }),
     });
     statsWindow.show();
@@ -768,97 +852,106 @@ export class ZInspire {
     }
 
     const total = recidSet.size;
-    Zotero.debug(
-      `[${config.addonName}] prefetchReferencesCache: creating progress window`,
-    );
-    const progressWindow = new ProgressWindowHelper(
-      getString("download-cache-progress-title"),
-    );
-    progressWindow.win.changeHeadline(
-      getString("download-cache-progress-title"),
-      PLUGIN_ICON,
-    );
-    progressWindow.createLine({
-      icon: PLUGIN_ICON,
-      text: getString("download-cache-start", { args: { total } }),
-      progress: 0,
+    const run = this.startRun<CancellableRun>({
+      cancelled: false,
+      cancelByEscape: true,
     });
-    progressWindow.show(-1); // Disable auto-close timer during download
-    Zotero.debug(
-      `[${config.addonName}] prefetchReferencesCache: progress window shown`,
-    );
-
-    let processed = 0;
-    let success = 0;
-    let failed = 0;
-
-    for (const recid of recidSet) {
-      // Check cancellation at start of each iteration
-      if (this.isCancelled) {
-        progressWindow.close();
-        this.showCacheCancelledStats(success, total);
-        return;
-      }
-
-      processed++;
-      progressWindow.changeLine({
-        icon: PLUGIN_ICON,
-        text: getString("download-cache-progress", {
-          args: { done: processed, total },
-        }),
-        progress: Math.round((processed / total) * 100),
-      });
-
-      try {
-        const entries = await fetchReferencesEntries(recid);
-        // Check again after async operation
-        if (this.isCancelled) {
-          progressWindow.close();
-          this.showCacheCancelledStats(success, total);
-          return;
-        }
-        // Enrich entries with complete metadata (title, authors, citation count)
-        // This ensures cached data is complete and usable offline
-        const enrichmentResult = await enrichReferencesEntries(entries);
-        if (!enrichmentResult.complete) {
-          throw new Error(
-            `Metadata enrichment failed for ${enrichmentResult.failedRecids.length} linked references`,
-          );
-        }
-        if (this.isCancelled) {
-          progressWindow.close();
-          this.showCacheCancelledStats(success, total);
-          return;
-        }
-        // Store without sort parameter (client-side sorting for references)
-        // Pass total = entries.length since references data is always complete
-        await localCache.set("refs", recid, entries, undefined, entries.length);
-        success++;
-      } catch (err) {
-        failed++;
-        Zotero.debug(
-          `[${config.addonName}] Failed to cache references for ${recid}: ${err}`,
-        );
-      }
-    }
-
-    progressWindow.win.changeHeadline(
-      getString("download-cache-progress-title"),
-      PLUGIN_ICON,
-    );
-    progressWindow.createLine({
-      icon: PLUGIN_ICON,
-      text: getString("download-cache-success", { args: { success } }),
-      type: "success",
-    });
-    if (failed > 0) {
+    try {
+      Zotero.debug(
+        `[${config.addonName}] prefetchReferencesCache: creating progress window`,
+      );
+      const progressWindow = openRunProgressWindow(
+        getString("download-cache-progress-title"),
+        { onEscape: () => this.cancelUpdate() },
+      );
+      progressWindow.win.changeHeadline(
+        getString("download-cache-progress-title"),
+        PLUGIN_ICON,
+      );
       progressWindow.createLine({
         icon: PLUGIN_ICON,
-        text: getString("download-cache-failed", { args: { failed } }),
-        type: "error",
+        text: getString("download-cache-start", { args: { total } }),
+        progress: 0,
       });
+      progressWindow.show(-1); // Disable auto-close timer during download
+      Zotero.debug(
+        `[${config.addonName}] prefetchReferencesCache: progress window shown`,
+      );
+
+      let processed = 0;
+      let success = 0;
+      let failed = 0;
+
+      for (const recid of recidSet) {
+        // Check cancellation at start of each iteration
+        if (run.cancelled) {
+          progressWindow.close();
+          this.showCacheCancelledStats(success, total);
+          return;
+        }
+
+        processed++;
+        progressWindow.changeLine({
+          icon: PLUGIN_ICON,
+          text: getString("download-cache-progress", {
+            args: { done: processed, total },
+          }),
+          progress: Math.round((processed / total) * 100),
+        });
+
+        try {
+          const entries = await fetchReferencesEntries(recid);
+          // Check again after async operation
+          if (run.cancelled) {
+            progressWindow.close();
+            this.showCacheCancelledStats(success, total);
+            return;
+          }
+          // Enrich entries with complete metadata (title, authors, citation count)
+          // This ensures cached data is complete and usable offline
+          const enrichmentResult = await enrichReferencesEntries(entries);
+          if (!enrichmentResult.complete) {
+            throw new Error(
+              `Metadata enrichment failed for ${enrichmentResult.failedRecids.length} linked references`,
+            );
+          }
+          if (run.cancelled) {
+            progressWindow.close();
+            this.showCacheCancelledStats(success, total);
+            return;
+          }
+          // Store without sort parameter (client-side sorting for references)
+          // Pass total = entries.length since references data is always complete
+          await localCache.set("refs", recid, entries, undefined, entries.length);
+          success++;
+        } catch (err) {
+          failed++;
+          Zotero.debug(
+            `[${config.addonName}] Failed to cache references for ${recid}: ${err}`,
+          );
+        }
+      }
+
+      progressWindow.win.changeHeadline(
+        getString("download-cache-progress-title"),
+        PLUGIN_ICON,
+      );
+      progressWindow.createLine({
+        icon: PLUGIN_ICON,
+        text: getString("download-cache-success", { args: { success } }),
+        type: "success",
+      });
+      if (failed > 0) {
+        progressWindow.createLine({
+          icon: PLUGIN_ICON,
+          text: getString("download-cache-failed", { args: { failed } }),
+          type: "error",
+        });
+      }
+      progressWindow.startCloseTimer(4000);
+    } finally {
+      this.endRun(run);
     }
-    progressWindow.startCloseTimer(4000);
   }
 
   /**
@@ -893,47 +986,14 @@ export class ZInspire {
     window.startCloseTimer(3000);
   }
 
-  // Legacy serial method (kept for reference)
-  updateNextItem(operation: string) {
-    this.numberOfUpdatedItems++;
-
-    if (this.current === this.toUpdate - 1) {
-      this.closeActiveProgressWindow();
-      this.resetState(operation);
-      return;
-    }
-
-    const progressWindow = this.progressWindow;
-    if (!progressWindow) {
-      Zotero.debug(
-        `[${config.addonName}] updateNextItem called without an active progress window`,
-      );
-      return;
-    }
-
-    this.current++;
-
-    const percent = Math.round(
-      (this.numberOfUpdatedItems / this.toUpdate) * 100,
-    );
-    progressWindow.changeLine({ icon: PLUGIN_ICON, progress: percent });
-    progressWindow.changeLine({
-      icon: PLUGIN_ICON,
-      text: "Item " + this.current + " of " + this.toUpdate,
-    });
-    progressWindow.show();
-
-    this.updateItem(this.itemsToUpdate[this.current], operation);
-  }
-
   /**
    * Internal method to update a single item (used by concurrent processor)
    */
   private async updateItemInternal(
     item: Zotero.Item,
     operation: string,
-    signal?: AbortSignal,
-  ) {
+    run: UpdateRun,
+  ): Promise<ItemRequestOutcome> {
     Zotero.debug(
       `[${config.addonName}] updateItemInternal: starting, item=${item.id}, operation=${operation}`,
     );
@@ -943,11 +1003,23 @@ export class ZInspire {
       operation === "citations"
     ) {
       Zotero.debug(
-        `[${config.addonName}] updateItemInternal: calling getInspireMeta`,
+        `[${config.addonName}] updateItemInternal: calling lookupInspireMeta`,
       );
-      const metaInspire = await getInspireMeta(item, operation, signal);
+      const lookup = await lookupInspireMeta(
+        item,
+        operation,
+        run.controller?.signal,
+      );
+      // No answer from INSPIRE says nothing about the record: leave the item
+      if (lookup.kind === "failed") {
+        Zotero.debug(
+          `[${config.addonName}] updateItemInternal: no answer for item ${item.id} (${lookup.aborted ? "cancelled" : "request failed"}), left unchanged`,
+        );
+        return lookup.aborted ? "aborted" : "failed";
+      }
+      const metaInspire = lookup.kind === "found" ? lookup.meta : -1;
       Zotero.debug(
-        `[${config.addonName}] updateItemInternal: getInspireMeta returned, recid=${metaInspire !== -1 ? (metaInspire as jsobject).recid : "N/A"}`,
+        `[${config.addonName}] updateItemInternal: lookupInspireMeta returned, recid=${metaInspire !== -1 ? (metaInspire as jsobject).recid : "N/A"}`,
       );
       if (metaInspire !== -1 && (metaInspire as jsobject).recid !== undefined) {
         if (item.hasTag(getPref("tag_norecid") as string)) {
@@ -981,11 +1053,16 @@ export class ZInspire {
             }
 
             // Show preview dialog only for single-item updates (not batch)
-            if (
+            const preview =
               allowedChanges.length > 0 &&
               shouldShowPreview() &&
-              this.toUpdate === 1
-            ) {
+              run.total === 1;
+            // Without a preview, an author list lacking authors of the item
+            // is not written; in the preview it is offered unticked
+            if (!preview) {
+              allowedChanges = allowedChanges.filter((c) => !c.conflict);
+            }
+            if (preview) {
               const result = await showSmartUpdatePreviewDialog(
                 diff,
                 allowedChanges,
@@ -994,7 +1071,7 @@ export class ZInspire {
                 Zotero.debug(
                   `[${config.addonName}] Smart update: user cancelled preview`,
                 );
-                return;
+                return "answered";
               }
               // Filter to only user-selected fields
               allowedChanges = allowedChanges.filter((c) =>
@@ -1004,7 +1081,7 @@ export class ZInspire {
                 Zotero.debug(
                   `[${config.addonName}] Smart update: no fields selected by user`,
                 );
-                return;
+                return "answered";
               }
             }
           }
@@ -1019,12 +1096,12 @@ export class ZInspire {
               allowedChanges,
             );
             await saveItemWithPendingInspireNote(item);
-            this.counter++;
+            run.counter++;
           } else if (targetType) {
             // No field changes, but the item type still has to change
             applyItemType(item, targetType);
             await item.saveTx();
-            this.counter++;
+            run.counter++;
           } else {
             Zotero.debug(
               `[${config.addonName}] Smart update: no changes to apply`,
@@ -1035,7 +1112,7 @@ export class ZInspire {
           applyItemType(item, targetType);
           await setInspireMeta(item, metaInspire as jsobject, operation);
           await saveItemWithPendingInspireNote(item);
-          this.counter++;
+          run.counter++;
         }
       } else {
         if (
@@ -1052,83 +1129,25 @@ export class ZInspire {
           item.removeTag(getPref("tag_norecid") as string);
           await item.saveTx();
         }
-        this.error_norecid = true;
-        this.noRecidCount++;
+        run.noRecidCount++;
         if (operation === "citations") {
           const crossref_count = await setCrossRefCitations(item);
           await item.saveTx();
           if (crossref_count >= 0) {
-            this.CrossRefcounter++;
+            run.crossRefCounter++;
           } else {
             if (/[\u4e00-\u9fa5]/.test(item.getField("title"))) {
               const cnki_count = await setCNKICitations(item);
               item.saveTx();
               if (cnki_count >= 0) {
-                this.CNKIcounter++
+                run.CNKIcounter++
               }
             }
           }
         }
       }
     }
-  }
-
-  async updateItem(item: Zotero.Item, operation: string) {
-    if (
-      operation === "full" ||
-      operation === "noabstract" ||
-      operation === "citations"
-    ) {
-      const metaInspire = await getInspireMeta(item, operation);
-      if (metaInspire !== -1 && (metaInspire as jsobject).recid !== undefined) {
-        if (item.hasTag(getPref("tag_norecid") as string)) {
-          item.removeTag(getPref("tag_norecid") as string);
-          item.saveTx();
-        }
-        applyItemType(
-          item,
-          resolveTargetItemType(item, metaInspire as jsobject, operation),
-        );
-        await setInspireMeta(item, metaInspire as jsobject, operation);
-        await saveItemWithPendingInspireNote(item);
-        this.counter++;
-      } else {
-        if (
-          getPref("tag_enable") &&
-          getPref("tag_norecid") !== "" &&
-          !item.hasTag(getPref("tag_norecid") as string)
-        ) {
-          item.addTag(getPref("tag_norecid") as string, 1);
-          item.saveTx();
-        } else if (
-          !getPref("tag_enable") &&
-          item.hasTag(getPref("tag_norecid") as string)
-        ) {
-          item.removeTag(getPref("tag_norecid") as string);
-          item.saveTx();
-        }
-        this.error_norecid = true;
-        this.noRecidCount++;
-        if (operation == "citations") {
-          const crossref_count = await setCrossRefCitations(item);
-          item.saveTx();
-          if (crossref_count >= 0) {
-            this.CrossRefcounter++;
-          } else {
-            if (/[\u4e00-\u9fa5]/.test(item.getField("title"))) {
-              const cnki_count = await setCNKICitations(item);
-              item.saveTx();
-              if (cnki_count >= 0) {
-                this.CNKIcounter++
-              }
-            }
-          }
-        }
-      }
-      this.updateNextItem(operation);
-    } else {
-      this.updateNextItem(operation);
-    }
+    return "answered";
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1253,7 +1272,7 @@ export class ZInspire {
       return;
     }
 
-    const url = `${INSPIRE_LITERATURE_URL}/${recid}`;
+    const url = inspireLiteratureUrl(recid);
     const success = await copyToClipboard(url);
     if (success) {
       this.showCopyNotification(
@@ -1303,7 +1322,7 @@ export class ZInspire {
       return;
     }
 
-    const url = `${INSPIRE_LITERATURE_URL}/${recid}`;
+    const url = inspireLiteratureUrl(recid);
     const markdown = `[${citationKey}](${url})`;
     const success = await copyToClipboard(markdown);
     if (success) {
@@ -1327,18 +1346,7 @@ export class ZInspire {
     if (!items.length) return;
 
     const citationKeys = items
-      .map((item) => {
-        let key = (item.getField("citationKey") as string | undefined)?.trim();
-        if (key) return key;
-
-        const extra = item.getField("extra") as string | undefined;
-        if (extra) {
-          const match = extra.match(/^Citation\s+Key:\s*(\S+)/m);
-          if (match) return match[1];
-        }
-
-        return undefined;
-      })
+      .map(itemCitationKey)
       .filter((key): key is string => !!key);
 
     if (!citationKeys.length) {
@@ -1601,27 +1609,94 @@ export class ZInspire {
   async showBackgroundPreprintResults(
     results: PreprintCheckResult[],
   ): Promise<void> {
-    const summary = buildCheckSummary(results);
-    const { selectedItemIDs, cancelled } =
-      await this.showPreprintCheckResultsDialog(summary);
+    await this.reviewPreprintResults(buildCheckSummary(results));
+  }
 
-    if (cancelled || selectedItemIDs.length === 0) return;
+  /**
+   * Show the results dialog, then apply what the user ticked: the publication
+   * update for published preprints, the INSPIRE record (recid, citation key,
+   * citation counts) for preprints INSPIRE has a record of that their items
+   * do not name yet.
+   */
+  private async reviewPreprintResults(
+    summary: PreprintCheckSummary,
+    where: ReviewWindow = {},
+  ): Promise<void> {
+    const { published, records, cancelled } =
+      await this.showPreprintCheckResultsDialog(summary, where.document);
+    if (cancelled) return;
 
-    // Filter results to only selected items
-    const selectedResults = summary.results.filter(
-      (r) => selectedItemIDs.includes(r.itemID) && r.status === "published",
-    );
+    const lines: string[] = [];
+    let failed = false;
+    if (published.length) {
+      const updateResult = await batchUpdatePreprints(published);
+      lines.push(
+        getString("preprint-update-success", {
+          args: { count: updateResult.success },
+        }),
+      );
+    }
+    if (records.length) {
+      const writes = await this.writeTickedInspireRecords(records);
+      let written = 0;
+      let conflicts = 0;
+      let shown = 0;
+      let changed = 0;
+      for (const write of writes) {
+        if (write.status === "written" && !write.archiveConflict) written++;
+        else if (
+          write.status === "written" ||
+          write.reason === "nothingToWrite"
+        )
+          conflicts++;
+        else if (write.reason === "shown") shown++;
+        else changed++;
+      }
+      lines.push(
+        getString("preprint-records-written", { args: { count: written } }),
+      );
+      for (const [key, count] of [
+        ["preprint-records-archive-conflict", conflicts],
+        ["preprint-records-shown", shown],
+        ["preprint-records-changed", changed],
+      ] as const) {
+        if (count) {
+          lines.push(getString(key, { args: { count } }));
+          failed = true;
+        }
+      }
+    }
+    if (lines.length) {
+      if (where.notify) {
+        where.notify(lines);
+      } else {
+        this.showPreprintNotification(
+          lines,
+          failed ? "fail" : "success",
+          failed ? PREPRINT_SUMMARY_DISPLAY_MS : undefined,
+        );
+      }
+    }
+  }
 
-    // Perform updates
-    const updateResult = await batchUpdatePreprints(selectedResults);
-
-    // Show completion notification
-    this.showPreprintNotification(
-      getString("preprint-update-success", {
-        args: { count: updateResult.success },
-      }),
-      "success",
-    );
+  /**
+   * INSPIRE completion asked for in the arXiv browser: the items INSPIRE has
+   * a record of, in the results dialog shown in that window, where the user
+   * ticks what is written (as for "Check Preprint Status")
+   */
+  async reviewInspireRecords(
+    entries: CompletionEntry[],
+    where: Required<ReviewWindow>,
+  ): Promise<void> {
+    const results: PreprintCheckResult[] = entries.map((entry) => ({
+      itemID: entry.itemID,
+      arxivId: entry.arxivId,
+      title: entry.title,
+      status: "unpublished",
+      mismatches: entry.mismatches,
+      completion: entry,
+    }));
+    await this.reviewPreprintResults(buildCheckSummary(results), where);
   }
 
   /**
@@ -1704,6 +1779,8 @@ export class ZInspire {
     });
     scanProgress.show(-1);
 
+    // Stops a background check before scanning (see beginManualCheck)
+    const endManualCheck = beginManualCheck();
     try {
       const preprints = await findUnpublishedPreprints(
         collection.libraryID,
@@ -1728,11 +1805,13 @@ export class ZInspire {
       Zotero.debug(
         `[${config.addonName}] checkPreprintsInCollection error: ${err}`,
       );
+    } finally {
+      endManualCheck();
     }
   }
 
   /**
-   * Check all preprints in user library.
+   * Check all preprints in My Library and every editable group library.
    * Entry point from collection context menu.
    */
   async checkAllPreprintsInLibrary(): Promise<void> {
@@ -1747,6 +1826,8 @@ export class ZInspire {
     });
     scanProgress.show(-1);
 
+    // Stops a background check before scanning (see beginManualCheck)
+    const endManualCheck = beginManualCheck();
     try {
       const preprints = await findUnpublishedPreprints();
       scanProgress.close();
@@ -1768,6 +1849,8 @@ export class ZInspire {
       Zotero.debug(
         `[${config.addonName}] checkAllPreprintsInLibrary error: ${err}`,
       );
+    } finally {
+      endManualCheck();
     }
   }
 
@@ -1783,18 +1866,17 @@ export class ZInspire {
     );
 
     const abortController = createAbortController() ?? null;
+    // Cancellable until the check ends; the results dialog and the updates
+    // after it are not
+    const run = this.startRun<CancellableRun>({
+      cancelled: false,
+      cancelByEscape: true,
+      onCancel: () => abortController?.abort(),
+    });
 
-    this.isCancelled = false;
-    this.setupEscapeListener();
-
-    // Override cancel handler to also abort the controller
-    const originalCancelUpdate = this.cancelUpdate.bind(this);
-    this.cancelUpdate = () => {
-      abortController?.abort();
-      originalCancelUpdate();
-    };
-
-    const progressWindow = new ProgressWindowHelper(config.addonName);
+    const progressWindow = openRunProgressWindow(config.addonName, {
+      onEscape: () => this.cancelUpdate(),
+    });
     progressWindow.createLine({
       icon: PLUGIN_ICON,
       text: getString("preprint-check-progress", {
@@ -1807,12 +1889,15 @@ export class ZInspire {
       `[${config.addonName}] checkPreprintsWithProgressAndDialog: progress window shown`,
     );
 
+    // Until the dialog is closed and the updates are done: no background
+    // check runs meanwhile (it would ask about, and offer, the same papers)
+    const endManualCheck = beginManualCheck();
     try {
       const results = await batchCheckPublicationStatus(preprints, {
         signal: abortController?.signal,
-        onProgress: (current, total, _found) => {
-          // Also check isCancelled flag for environments without AbortController
-          if (this.isCancelled) return;
+        onProgress: (current, total) => {
+          // Also check the flag for environments without AbortController
+          if (run.cancelled) return;
           progressWindow.changeLine({
             icon: PLUGIN_ICON,
             text: getString("preprint-check-progress", {
@@ -1828,9 +1913,9 @@ export class ZInspire {
         `[${config.addonName}] checkPreprintsWithProgressAndDialog: check completed, closing progress`,
       );
       progressWindow.close();
-      this.removeEscapeListener();
+      this.endRun(run);
 
-      if (this.isCancelled) {
+      if (run.cancelled) {
         this.showPreprintNotification(
           getString("preprint-check-cancelled"),
           "fail",
@@ -1838,30 +1923,10 @@ export class ZInspire {
         return;
       }
 
-      const summary = buildCheckSummary(results);
-      const { selectedItemIDs, cancelled } =
-        await this.showPreprintCheckResultsDialog(summary);
-
-      if (cancelled || selectedItemIDs.length === 0) return;
-
-      // Filter results to only selected items
-      const selectedResults = summary.results.filter(
-        (r) => selectedItemIDs.includes(r.itemID) && r.status === "published",
-      );
-
-      // Perform updates
-      const updateResult = await batchUpdatePreprints(selectedResults);
-
-      // Show completion notification
-      this.showPreprintNotification(
-        getString("preprint-update-success", {
-          args: { count: updateResult.success },
-        }),
-        "success",
-      );
+      await this.reviewPreprintResults(buildCheckSummary(results));
     } catch (err: any) {
       progressWindow.close();
-      this.removeEscapeListener();
+      this.endRun(run);
       if (err.name === "AbortError") {
         this.showPreprintNotification(
           getString("preprint-check-cancelled"),
@@ -1872,35 +1937,76 @@ export class ZInspire {
           `[${config.addonName}] checkPreprintsWithProgressAndDialog error: ${err}`,
         );
       }
+    } finally {
+      this.endRun(run);
+      endManualCheck();
     }
   }
 
   /**
-   * Show preprint check results dialog.
-   * Allows user to select which items to update.
+   * Write the INSPIRE records the user ticked. An item shown in the item pane
+   * is never written, and the library selection is shown there (batch editing
+   * shows every selected item): ticked items selected in the library, such as
+   * those of "Check Preprint Status", are unselected for the write and
+   * selected again afterwards. An item open in a reader stays unwritten.
+   */
+  private async writeTickedInspireRecords(records: CompletionEntry[]) {
+    const pane = Zotero.getActiveZoteroPane() as any;
+    const selected: number[] =
+      pane?.getSelectedItems?.(true, { libraryTabOnly: true }) ?? [];
+    const ticked = new Set(records.map((record) => record.itemID));
+    const unselect = selected.some((id) => ticked.has(id));
+    if (unselect) pane.itemsView.selection.clearSelection();
+    try {
+      return await writeInspireCompletion(records);
+    } finally {
+      if (unselect) await pane.itemsView.selectItems(selected, true, true);
+    }
+  }
+
+  /**
+   * Show preprint check results dialog: the published preprints (publication
+   * update) and the preprints INSPIRE has a record of that their items do
+   * not name yet (write the INSPIRE record). Rows whose INSPIRE record may be
+   * another paper say why and start unticked. Returns the ticked rows of
+   * each kind.
    */
   private async showPreprintCheckResultsDialog(
     summary: PreprintCheckSummary,
-  ): Promise<{ selectedItemIDs: number[]; cancelled: boolean }> {
+    hostDocument?: Document,
+  ): Promise<{
+    published: PreprintCheckResult[];
+    records: CompletionEntry[];
+    cancelled: boolean;
+  }> {
     return new Promise((resolve) => {
-      const win = Zotero.getMainWindow();
-      if (!win) {
-        resolve({ selectedItemIDs: [], cancelled: true });
+      const doc = hostDocument ?? Zotero.getMainWindow()?.document;
+      if (!doc) {
+        resolve({ published: [], records: [], cancelled: true });
         return;
       }
 
-      const doc = win.document;
       const publishedResults = summary.results.filter(
         (r) => r.status === "published" && r.publicationInfo,
       );
+      const recordResults = summary.results.filter((r) => r.completion);
 
-      // If no published items found, show simple notification
-      if (publishedResults.length === 0) {
+      // Nothing to update or write: show how many preprints had each outcome
+      if (publishedResults.length === 0 && recordResults.length === 0) {
         this.showPreprintNotification(
-          getString("preprint-all-current"),
-          "default",
+          getString("preprint-check-summary", {
+            args: {
+              total: summary.total,
+              published: summary.published,
+              unpublished: summary.unpublished,
+              notInInspire: summary.notInInspire,
+              errors: summary.errors,
+            },
+          }),
+          summary.errors > 0 ? "fail" : "default",
+          PREPRINT_SUMMARY_DISPLAY_MS,
         );
-        resolve({ selectedItemIDs: [], cancelled: false });
+        resolve({ published: [], records: [], cancelled: false });
         return;
       }
 
@@ -1933,9 +2039,13 @@ export class ZInspire {
         background-color: var(--material-sidepane, #f5f5f5);
         border-radius: 8px 8px 0 0;
       `;
-      header.textContent = getString("preprint-found-published", {
-        args: { count: publishedResults.length },
-      });
+      header.textContent = publishedResults.length
+        ? getString("preprint-found-published", {
+            args: { count: publishedResults.length },
+          })
+        : getString("preprint-found-records", {
+            args: { count: recordResults.length },
+          });
       panel.appendChild(header);
 
       // Summary bar
@@ -1950,26 +2060,56 @@ export class ZInspire {
       publishedSpan.textContent = `${getString("preprint-results-published")}: ${summary.published}`;
       const unpublishedSpan = doc.createElement("span");
       unpublishedSpan.textContent = `${getString("preprint-results-unpublished")}: ${summary.unpublished}`;
+      const notInInspireSpan = doc.createElement("span");
+      notInInspireSpan.textContent = `${getString("preprint-results-not-in-inspire")}: ${summary.notInInspire}`;
       const errorsSpan = doc.createElement("span");
       errorsSpan.textContent = `${getString("preprint-results-errors")}: ${summary.errors}`;
-      summaryBar.append(publishedSpan, unpublishedSpan, errorsSpan);
-      panel.appendChild(summaryBar);
+      summaryBar.append(
+        publishedSpan,
+        unpublishedSpan,
+        notInInspireSpan,
+        errorsSpan,
+      );
+      // The counts are those of a preprint check (not of another window's)
+      if (!hostDocument) panel.appendChild(summaryBar);
 
       // List container
       const listContainer = doc.createElement("div");
       listContainer.style.cssText = `flex: 1; overflow-y: auto; padding: 8px 16px;`;
       panel.appendChild(listContainer);
 
-      // Track selected items (all selected by default)
+      // Ticked at first: rows whose record is the item's paper
       const selectedIDs = new Set<number>(
-        publishedResults.map((r) => r.itemID),
+        [...publishedResults, ...recordResults]
+          .filter((r) => !r.mismatches?.length)
+          .map((r) => r.itemID),
       );
 
-      // Create rows for each published item using DocumentFragment for batching
+      // Create rows for each item using DocumentFragment for batching
       const fragment = doc.createDocumentFragment();
-      for (const result of publishedResults) {
-        const row = this.createPreprintResultRow(doc, result, selectedIDs);
-        fragment.appendChild(row);
+      for (const [heading, results] of [
+        ["preprint-section-published", publishedResults],
+        ["preprint-section-records", recordResults],
+      ] as const) {
+        if (!results.length) continue;
+        // A heading only when the dialog lists both kinds
+        if (publishedResults.length && recordResults.length) {
+          const title = doc.createElement("div");
+          title.style.cssText = `font-weight: 600; margin: 8px 0;`;
+          title.textContent = getString(heading);
+          fragment.appendChild(title);
+        }
+        for (const result of results) {
+          fragment.appendChild(
+            this.createPreprintResultRow(doc, result, selectedIDs),
+          );
+        }
+      }
+      if (!publishedResults.length) {
+        const note = doc.createElement("div");
+        note.style.cssText = `font-size: 12px; color: var(--fill-secondary, #666); margin-bottom: 8px;`;
+        note.textContent = getString("preprint-section-records");
+        fragment.prepend(note);
       }
       listContainer.appendChild(fragment);
 
@@ -1988,7 +2128,13 @@ export class ZInspire {
       selectAllContainer.style.cssText = `display: flex; align-items: center; gap: 6px; cursor: pointer;`;
       const selectAllCheckbox = doc.createElement("input");
       selectAllCheckbox.type = "checkbox";
-      selectAllCheckbox.checked = true;
+      const allTicked = () =>
+        selectedIDs.size === publishedResults.length + recordResults.length;
+      selectAllCheckbox.checked = allTicked();
+      // Follows the rows, so that it ticks every row after one was unticked
+      listContainer.addEventListener("change", () => {
+        selectAllCheckbox.checked = allTicked();
+      });
       selectAllCheckbox.addEventListener("change", () => {
         const checkboxes = listContainer.querySelectorAll(
           'input[type="checkbox"]',
@@ -2046,8 +2192,11 @@ export class ZInspire {
         isFinished = true;
         overlay.remove();
         doc.removeEventListener("keydown", onKeyDown, true);
+        const ticked = (r: PreprintCheckResult) =>
+          !cancelled && selectedIDs.has(r.itemID);
         resolve({
-          selectedItemIDs: cancelled ? [] : Array.from(selectedIDs),
+          published: publishedResults.filter(ticked),
+          records: recordResults.filter(ticked).map((r) => r.completion!),
           cancelled,
         });
       };
@@ -2087,7 +2236,7 @@ export class ZInspire {
     // Checkbox
     const checkbox = doc.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = true;
+    checkbox.checked = selectedIDs.has(result.itemID);
     checkbox.dataset.itemId = String(result.itemID);
     checkbox.style.cssText = `margin-right: 10px; margin-top: 3px; cursor: pointer;`;
     checkbox.addEventListener("change", () => {
@@ -2138,6 +2287,35 @@ export class ZInspire {
       content.appendChild(infoDiv);
     }
 
+    // The INSPIRE record that would be written
+    const record = result.completion?.record;
+    if (record) {
+      const recordLine = doc.createElement("div");
+      recordLine.style.cssText = `font-size: 12px; color: var(--fill-secondary, #666);`;
+      recordLine.textContent = getString("preprint-record-line", {
+        args: {
+          recid: record.recid,
+          title: record.title ?? "",
+          author: record.firstAuthor ?? "",
+        },
+      });
+      content.appendChild(recordLine);
+    }
+
+    // Why the record may be another paper's
+    if (result.mismatches?.length) {
+      const warning = doc.createElement("div");
+      warning.style.cssText = `font-size: 12px; color: #b45309; margin-top: 2px;`;
+      warning.textContent = `\u26a0 ${getString("preprint-mismatch", {
+        args: {
+          reasons: result.mismatches
+            .map((reason) => getString(`preprint-mismatch-${reason}`))
+            .join(", "),
+        },
+      })}`;
+      content.appendChild(warning);
+    }
+
     row.appendChild(content);
     return row;
   }
@@ -2146,8 +2324,9 @@ export class ZInspire {
    * Show a notification for preprint operations.
    */
   private showPreprintNotification(
-    text: string,
+    text: string | string[],
     type: "success" | "fail" | "default",
+    closeDelayMs = 2500,
   ): void {
     Zotero.debug(
       `[${config.addonName}] showPreprintNotification: "${text}", type=${type}`,
@@ -2155,13 +2334,15 @@ export class ZInspire {
     const progressWindow = new ProgressWindowHelper(config.addonName);
     const icon =
       type === "fail" ? "chrome://zotero/skin/cross.png" : PLUGIN_ICON;
-    progressWindow.createLine({
-      text,
-      icon,
-      type: type === "default" ? "success" : type,
-    });
+    for (const line of typeof text === "string" ? [text] : text) {
+      progressWindow.createLine({
+        text: line,
+        icon,
+        type: type === "default" ? "success" : type,
+      });
+    }
     progressWindow.show();
-    progressWindow.startCloseTimer(2500);
+    progressWindow.startCloseTimer(closeDelayMs);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2398,10 +2579,24 @@ function applyItemType(
 }
 
 /**
+ * An arXiv paper's line in Extra: "arXiv:2401.00001 [hep-ph]" with the
+ * primary category for new-style identifiers, "arXiv:hep-ph/0101001" for
+ * old-style ones (their archive names the subject)
+ */
+export function arxivExtraLine(
+  arxivId: string,
+  primaryCategory: string | undefined,
+): string {
+  return /^\d/.test(arxivId)
+    ? `arXiv:${arxivId} [${primaryCategory}]`
+    : `arXiv:${arxivId}`;
+}
+
+/**
  * Preprint items: fill the fields Zotero's own arXiv translator uses
  * (Archive ID "arXiv:ID", Repository "arXiv") when they are still empty.
  */
-function setPreprintArxivFields(
+export function setPreprintArxivFields(
   item: Zotero.Item,
   metaInspire: jsobject,
 ): void {
@@ -2538,25 +2733,22 @@ export async function setInspireMeta(
       }
       if (metaInspire.creators && item.getCreators().length === 0) {
         // Check for protected author names
-        const protectionConfig = getFieldProtectionConfig();
-        const localCreators = item.getCreators() as _ZoteroTypes.Item.Creator[];
-        const mergedCreators = mergeCreatorsWithProtectedNames(
-          localCreators,
-          metaInspire.creators,
-          protectionConfig.protectedNames,
+        // No one is asked here: an author INSPIRE's list lacks is not dropped
+        item.setCreators(
+          creatorsForUpdate(
+            item.getCreators() as _ZoteroTypes.Item.Creator[],
+            metaInspire.creators,
+            getFieldProtectionConfig().protectedNames,
+          ),
         );
-        item.setCreators(mergedCreators ?? metaInspire.creators);
       }
 
       if (metaInspire.arxiv) {
         const arxivId = metaInspire.arxiv.value;
-        let arXivInfo = "";
-        if (/^\d/.test(arxivId)) {
-          const arxivPrimeryCategory = metaInspire.arxiv.categories[0];
-          arXivInfo = `arXiv:${arxivId} [${arxivPrimeryCategory}]`;
-        } else {
-          arXivInfo = "arXiv:" + arxivId;
-        }
+        const arXivInfo = arxivExtraLine(
+          arxivId,
+          metaInspire.arxiv.categories[0],
+        );
         const numberOfArxiv = (extra.match(ARXIV_EXTRA_LINE_REGEX) || "")
           .length;
         if (numberOfArxiv !== 1) {
@@ -2647,7 +2839,7 @@ export async function setInspireMeta(
     extra = reorderExtraFields(extra);
     item.setField("extra", extra);
 
-    setArxivCategoryTag(item);
+    setArxivCategoryTag(item, metaInspire.arxiv?.categories?.[0]);
   }
 }
 
@@ -2929,7 +3121,7 @@ export async function setInspireMetaSelective(
     extra = reorderExtraFields(extra);
     item.setField("extra", extra);
 
-    setArxivCategoryTag(item);
+    setArxivCategoryTag(item, metaInspire.arxiv?.categories?.[0]);
   }
 }
 
@@ -2998,7 +3190,7 @@ async function upsertInspireNote(
   const targetLooksLikeErratum = normalizedTarget.includes("erratum");
 
   for (const id of noteIDs) {
-    const note = Zotero.Items.get(id);
+    const note = Zotero.Items.get(id) as Zotero.Item;
     const normalizedExisting = normalizeInspireNoteContent(note.getNote());
     if (!normalizedExisting) {
       continue;
@@ -3148,6 +3340,23 @@ function reorderExtraFields(extra: string): string {
   return reordered.join("\n");
 }
 
+/**
+ * Extra with INSPIRE's citation count lines set, laid out as the INSPIRE
+ * update lays them out
+ */
+export function setInspireCitationLines(
+  extra: string,
+  citationCount: number,
+  citationCountWithoutSelf: number,
+): string {
+  const updated = setCitations(
+    extra,
+    citationCount,
+    citationCountWithoutSelf,
+  ).replace(/\n\n/gm, "\n");
+  return reorderExtraFields(updated);
+}
+
 function setCitations(
   extra: string,
   citation_count: number,
@@ -3206,38 +3415,17 @@ function setCitations(
 // arXiv Tag Management
 // ─────────────────────────────────────────────────────────────────────────────
 
-function setArxivCategoryTag(item: Zotero.Item) {
-  const arxiv_tag_pref = getPref("arxiv_tag_enable");
-  if (!arxiv_tag_pref) {
-    return;
-  }
-
-  const extra = item.getField("extra") as string;
-  let primaryCategory = "";
-
-  const newFormatMatch = extra.match(/arXiv:\d{4}\.\d{4,5}\s*\[([^\]]+)\]/i);
-  if (newFormatMatch) {
-    primaryCategory = newFormatMatch[1];
-  } else {
-    const oldFormatMatch = extra.match(/arXiv:([a-z-]+)\/\d{7}/i);
-    if (oldFormatMatch) {
-      primaryCategory = oldFormatMatch[1];
-    }
-  }
-
-  if (primaryCategory) {
-    if (!item.hasTag(primaryCategory)) {
-      item.addTag(primaryCategory);
-      // Only persist here for an already-saved item. For a NEW (unsaved) item
-      // the caller (e.g. importReference) saves it right after, and a second
-      // concurrent saveTx on the same new item races that save -> duplicate
-      // INSERT -> "NOT NULL constraint failed: items.itemTypeID", which throws
-      // and aborts the whole add flow (including auto-find-full-text). The
-      // in-memory tag added above is persisted by the caller's save.
-      // skipSelect keeps the (already-saved) item's tree selection unchanged.
-      if (item.id) {
-        item.saveTx({ skipSelect: true });
-      }
+function setArxivCategoryTag(item: Zotero.Item, primaryCategory?: string) {
+  if (addArxivCategoryTag(item, primaryCategory)) {
+    // Only persist here for an already-saved item. For a NEW (unsaved) item
+    // the caller (e.g. importReference) saves it right after, and a second
+    // concurrent saveTx on the same new item races that save -> duplicate
+    // INSERT -> "NOT NULL constraint failed: items.itemTypeID", which throws
+    // and aborts the whole add flow (including auto-find-full-text). The
+    // in-memory tag added above is persisted by the caller's save.
+    // skipSelect keeps the (already-saved) item's tree selection unchanged.
+    if (item.id) {
+      item.saveTx({ skipSelect: true });
     }
   }
 }

@@ -8,14 +8,21 @@ import { getString } from "../../../utils/locale";
 import {
   type InspireReferenceEntry,
   buildDisplayText,
-  findItemsByRecids,
-  findItemsByArxivs,
-  findItemsByDOIs,
   createAbortController,
   createMockSignal,
 } from "../index";
 import type { SaveTargetSelection } from "../../pickerUI";
-import { ProgressWindowHelper } from "zotero-plugin-toolkit";
+import type { AddPaperOutcome } from "../../arxiv/addToLibrary";
+import type { ArxivPdfResult } from "../../arxiv/arxivPdf";
+import { LibraryIndexError } from "../library/arxivIndex";
+import {
+  duplicateInfo,
+  entryArxivId,
+  findDuplicates,
+  mergeHits,
+  type DuplicateInfo,
+} from "../library/localStatus";
+import type { Reporter } from "./reporter";
 
 // XHTML namespace for proper element creation in Zotero (FIX-NAMESPACE-WARNING)
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
@@ -25,11 +32,88 @@ const XHTML_NS = "http://www.w3.org/1999/xhtml";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Duplicate detection result for an entry.
+ * Duplicate detection result for an entry (library/localStatus.ts).
  */
-export interface DuplicateInfo {
-  localItemID: number;
-  matchType: "recid" | "arxiv" | "doi";
+export type { DuplicateInfo };
+
+/**
+ * The selected rows that show one paper (a paper announced on two days has a
+ * row on each): the paper is checked and imported once, and what came of it
+ * is written to every row showing it
+ */
+export interface SelectedPaper {
+  /** The selected rows, in list order; the first stands for the paper */
+  entries: InspireReferenceEntry[];
+}
+
+/**
+ * The identifiers that make rows one paper: the canonical arXiv identifier
+ * and the INSPIRE recid (one INSPIRE record per arXiv identifier); a row
+ * with neither is a paper of its own
+ */
+function paperKeys(entry: InspireReferenceEntry): string[] {
+  const keys: string[] = [];
+  const arxivId = entryArxivId(entry);
+  if (arxivId) keys.push(`arxiv:${arxivId}`);
+  if (entry.recid) keys.push(`recid:${entry.recid}`);
+  return keys.length ? keys : [`row:${entry.id}`];
+}
+
+/** `entries` gathered into papers, in the order of their first rows */
+export function groupByPaper(
+  entries: readonly InspireReferenceEntry[],
+): SelectedPaper[] {
+  const papers: SelectedPaper[] = [];
+  const paperOf = new Map<string, SelectedPaper>();
+  for (const entry of entries) {
+    const keys = paperKeys(entry);
+    let paper = keys.map((key) => paperOf.get(key)).find(Boolean);
+    if (!paper) {
+      paper = { entries: [] };
+      papers.push(paper);
+    }
+    paper.entries.push(entry);
+    for (const key of keys) if (!paperOf.has(key)) paperOf.set(key, paper);
+  }
+  return papers;
+}
+
+/** A paper added by a batch import */
+export interface AddedPaper {
+  /** Its selected rows */
+  entries: InspireReferenceEntry[];
+  outcome: Extract<AddPaperOutcome, { status: "added" }>;
+  /** How attaching its arXiv PDF ended, when one was attached */
+  pdf?: ArxivPdfResult;
+}
+
+/** A paper a batch import did not add, and why */
+export interface NotAddedPaper {
+  /** Its selected rows */
+  entries: InspireReferenceEntry[];
+  outcome: Exclude<AddPaperOutcome, { status: "added" }>;
+}
+
+/** The name of a library, as Zotero shows it */
+function libraryName(libraryID: number): string {
+  const library = Zotero.Libraries.get(libraryID) as { name?: string } | false;
+  return (library && library.name) || `Library ${libraryID}`;
+}
+
+/** A paper skipped in the duplicate dialog: in the library already */
+function skippedPaper(
+  paper: SelectedPaper,
+  info: DuplicateInfo | undefined,
+): NotAddedPaper {
+  const hits = info?.hits ?? [];
+  return {
+    entries: paper.entries,
+    outcome: {
+      status: "inLibrary",
+      hits,
+      doiOnly: hits.every((hit) => hit.by.every((by) => by === "doi")),
+    },
+  };
 }
 
 /**
@@ -37,15 +121,26 @@ export interface DuplicateInfo {
  */
 export interface BatchImportResult {
   success: number;
+  /** Papers not added for another reason than the cancel */
   failed: number;
   cancelled: boolean;
+  /** The papers added, in list order */
+  added: AddedPaper[];
+  /**
+   * The papers not added, in list order: those the cancel stopped, and those
+   * skipped in the duplicate dialog (as in the library), included
+   */
+  notAdded: NotAddedPaper[];
 }
 
 /**
  * Options for BatchImportManager initialization.
  */
 export interface BatchImportManagerOptions {
-  /** Callback to get the document for UI operations */
+  /**
+   * Callback to get the document for UI operations; Escape pressed in its
+   * window stops a running import
+   */
   getDocument: () => Document;
   /** Callback to get the body element for attaching dialogs */
   getBody: () => HTMLElement;
@@ -58,17 +153,43 @@ export interface BatchImportManagerOptions {
   getAllEntries: () => InspireReferenceEntry[];
   /** Callback to get filtered entries (current view) */
   getFilteredEntries: () => InspireReferenceEntry[];
-  /** Callback to import a single reference by recid */
-  importReference: (
-    recid: string,
+  /**
+   * Whether a selected row can be imported (default: it has an INSPIRE
+   * record)
+   */
+  canImport?: (entry: InspireReferenceEntry) => boolean;
+  /**
+   * Called once, before the first paper is imported, with the first row of
+   * every paper to import: what the papers need from the network can be
+   * asked for all of them at once
+   */
+  prepareImport?: (
+    entries: InspireReferenceEntry[],
     target: SaveTargetSelection,
-  ) => Promise<Zotero.Item | null>;
+    signal: AbortSignal,
+  ) => Promise<void>;
+  /**
+   * Import one paper (`entry` is its first selected row) into `target`, a
+   * few at a time. When the user cancels, `signal` aborts: the paper's
+   * requests, waiting or in flight, end, and nothing is saved after that; a
+   * save already under way completes.
+   */
+  importEntry: (
+    entry: InspireReferenceEntry,
+    target: SaveTargetSelection,
+    signal: AbortSignal,
+  ) => Promise<AddPaperOutcome>;
   /** Callback to prompt for save target (shows picker UI) */
   promptForSaveTarget: (
     anchor: HTMLElement,
   ) => Promise<SaveTargetSelection | null>;
-  /** Callback to show a toast notification */
-  showToast: (message: string) => void;
+  /** Where notices and the import's progress are shown */
+  reporter: Reporter;
+  /**
+   * Tell the user what came of an import (default: a notice with the counts
+   * of papers added and not added)
+   */
+  summarize?: (result: BatchImportResult) => void;
   /** Callback to update a single row's status in the list */
   updateRowStatus: (entry: InspireReferenceEntry) => void;
   /** Callback when batch toolbar visibility should be updated */
@@ -101,9 +222,7 @@ export class BatchImportManager {
   private lastSelectedEntryID?: string; // For Shift+Click range selection
 
   // Closes the duplicate dialog while it is open
-  private closeDuplicateDialog?: (
-    result: InspireReferenceEntry[] | null,
-  ) => void;
+  private closeDuplicateDialog?: (result: SelectedPaper[] | null) => void;
   // Stops waiting for the duplicate search while it runs
   private cancelDuplicateSearch?: () => void;
   // Set once the panel has gone away
@@ -183,6 +302,19 @@ export class BatchImportManager {
     this.notifySelectionChange();
   }
 
+  /** Select or unselect these rows */
+  setSelected(
+    entries: readonly InspireReferenceEntry[],
+    selected: boolean,
+  ): void {
+    for (const entry of entries) {
+      if (selected) this.selectedEntryIDs.add(entry.id);
+      else this.selectedEntryIDs.delete(entry.id);
+    }
+    this.updateAllCheckboxes();
+    this.notifySelectionChange();
+  }
+
   /**
    * Select all entries in the current filtered view.
    */
@@ -243,26 +375,34 @@ export class BatchImportManager {
       `[${config.addonName}] handleBatchImport: started, selectedEntryIDs.size=${this.selectedEntryIDs.size}`,
     );
     if (this.selectedEntryIDs.size === 0) {
-      this.options.showToast(getString("references-panel-batch-no-selection"));
+      this.options.reporter.notify(
+        getString("references-panel-batch-no-selection"),
+      );
       return null;
     }
 
     const allEntries = this.options.getAllEntries();
+    const canImport = this.options.canImport ?? ((e) => !!e.recid);
     const selectedEntries = allEntries.filter(
-      (e) => this.selectedEntryIDs.has(e.id) && e.recid,
+      (e) => this.selectedEntryIDs.has(e.id) && canImport(e),
     );
     Zotero.debug(
       `[${config.addonName}] handleBatchImport: selectedEntries.length=${selectedEntries.length}`,
     );
 
     if (selectedEntries.length === 0) {
-      this.options.showToast(getString("references-panel-batch-no-selection"));
+      this.options.reporter.notify(
+        getString("references-panel-batch-no-selection"),
+      );
       return null;
     }
 
     try {
       BatchImportManager.setImportInProgress(true);
-      return await this.importSelectedEntries(selectedEntries, anchor);
+      return await this.importSelectedPapers(
+        groupByPaper(selectedEntries),
+        anchor,
+      );
     } finally {
       BatchImportManager.setImportInProgress(false);
     }
@@ -273,11 +413,11 @@ export class BatchImportManager {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Check the selected entries for duplicates, ask for the save target, and
+   * Check the selected papers for duplicates, ask for the save target, and
    * import. Returns the import result or null if cancelled.
    */
-  private async importSelectedEntries(
-    selectedEntries: InspireReferenceEntry[],
+  private async importSelectedPapers(
+    selectedPapers: SelectedPaper[],
     anchor: HTMLElement,
   ): Promise<BatchImportResult | null> {
     // Detect duplicates
@@ -285,14 +425,25 @@ export class BatchImportManager {
       `[${config.addonName}] handleBatchImport: detecting duplicates...`,
     );
     // If the panel goes away meanwhile, stop waiting for the search
-    let duplicates: Map<string, DuplicateInfo> | null;
+    let duplicates: Map<SelectedPaper, DuplicateInfo> | null;
     try {
-      duplicates = await new Promise<Map<string, DuplicateInfo> | null>(
+      duplicates = await new Promise<Map<SelectedPaper, DuplicateInfo> | null>(
         (resolve, reject) => {
           this.cancelDuplicateSearch = () => resolve(null);
-          this.detectDuplicates(selectedEntries).then(resolve, reject);
+          this.detectDuplicates(selectedPapers).then(resolve, reject);
         },
       );
+    } catch (err) {
+      // Without the check, papers already in the library would be added
+      // again: import nothing, and say so
+      if (!(err instanceof LibraryIndexError)) throw err;
+      Zotero.debug(`[${config.addonName}] handleBatchImport: ${err}`);
+      if (!this.disposed) {
+        this.options.reporter.notify(
+          getString("references-panel-batch-duplicate-check-failed"),
+        );
+      }
+      return null;
     } finally {
       this.cancelDuplicateSearch = undefined;
     }
@@ -308,21 +459,34 @@ export class BatchImportManager {
     );
 
     // If there are duplicates, show dialog
-    let entriesToImport = selectedEntries;
+    let papersToImport = selectedPapers;
     if (duplicates.size > 0) {
-      const result = await this.showDuplicateDialog(
-        selectedEntries,
-        duplicates,
-      );
+      const result = await this.showDuplicateDialog(selectedPapers, duplicates);
       if (!result) {
         return null; // User cancelled
       }
-      entriesToImport = result;
+      papersToImport = result;
     }
 
-    if (entriesToImport.length === 0) {
-      this.options.showToast(getString("references-panel-batch-no-selection"));
-      return null;
+    if (papersToImport.length === 0) {
+      // Every paper was skipped in the duplicate dialog
+      const result: BatchImportResult = {
+        success: 0,
+        failed: 0,
+        cancelled: false,
+        added: [],
+        notAdded: selectedPapers.map((paper) =>
+          skippedPaper(paper, duplicates.get(paper)),
+        ),
+      };
+      if (this.options.summarize) {
+        this.options.summarize(result);
+      } else {
+        this.options.reporter.notify(
+          getString("references-panel-batch-no-selection"),
+        );
+      }
+      return result;
     }
 
     // Prompt for save target
@@ -339,9 +503,14 @@ export class BatchImportManager {
 
     // Run batch import
     Zotero.debug(
-      `[${config.addonName}] handleBatchImport: starting batch import for ${entriesToImport.length} entries`,
+      `[${config.addonName}] handleBatchImport: starting batch import for ${papersToImport.length} papers`,
     );
-    return this.runBatchImport(entriesToImport, target);
+    return this.runBatchImport(
+      selectedPapers,
+      papersToImport,
+      target,
+      duplicates,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -349,100 +518,21 @@ export class BatchImportManager {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Detect duplicates for selected entries.
+   * Papers of the selection already in the library (localStatus.ts), with
+   * the items found by any of their rows. Rejects with LibraryIndexError
+   * when the library cannot be read.
    */
   private async detectDuplicates(
-    entries: InspireReferenceEntry[],
-  ): Promise<Map<string, DuplicateInfo>> {
-    const duplicates = new Map<string, DuplicateInfo>();
-
-    // Skip entries that already have localItemID
-    const entriesToCheck = entries.filter((e) => !e.localItemID);
-    if (entriesToCheck.length === 0) {
-      // All entries already have localItemID
-      for (const entry of entries) {
-        if (entry.localItemID) {
-          duplicates.set(entry.id, {
-            localItemID: entry.localItemID,
-            matchType: "recid",
-          });
-        }
-      }
-      return duplicates;
+    papers: SelectedPaper[],
+  ): Promise<Map<SelectedPaper, DuplicateInfo>> {
+    const byRow = await findDuplicates(papers.flatMap((p) => p.entries));
+    const duplicates = new Map<SelectedPaper, DuplicateInfo>();
+    for (const paper of papers) {
+      const info = duplicateInfo(
+        mergeHits(paper.entries.flatMap((e) => byRow.get(e.id)?.hits ?? [])),
+      );
+      if (info) duplicates.set(paper, info);
     }
-
-    // Collect identifiers for batch queries
-    const recids: string[] = [];
-    const arxivIds: string[] = [];
-    const dois: string[] = [];
-    const entryByRecid = new Map<string, InspireReferenceEntry>();
-    const entryByArxiv = new Map<string, InspireReferenceEntry>();
-    const entryByDOI = new Map<string, InspireReferenceEntry>();
-
-    for (const entry of entriesToCheck) {
-      if (entry.recid) {
-        recids.push(entry.recid);
-        entryByRecid.set(entry.recid, entry);
-      }
-      const arxivId =
-        typeof entry.arxivDetails === "object"
-          ? entry.arxivDetails?.id
-          : undefined;
-      if (arxivId) {
-        arxivIds.push(arxivId);
-        entryByArxiv.set(arxivId, entry);
-      }
-      if (entry.doi) {
-        dois.push(entry.doi);
-        entryByDOI.set(entry.doi, entry);
-      }
-    }
-
-    // Batch query for each identifier type (priority: recid > arXiv > DOI)
-    const [recidMatches, arxivMatches, doiMatches] = await Promise.all([
-      recids.length > 0
-        ? findItemsByRecids(recids)
-        : Promise.resolve(new Map<string, number>()),
-      arxivIds.length > 0
-        ? findItemsByArxivs(arxivIds)
-        : Promise.resolve(new Map<string, number>()),
-      dois.length > 0
-        ? findItemsByDOIs(dois)
-        : Promise.resolve(new Map<string, number>()),
-    ]);
-
-    // Add already-local entries
-    for (const entry of entries) {
-      if (entry.localItemID) {
-        duplicates.set(entry.id, {
-          localItemID: entry.localItemID,
-          matchType: "recid",
-        });
-      }
-    }
-
-    // Process matches in priority order
-    for (const [recid, localItemID] of recidMatches) {
-      const entry = entryByRecid.get(recid);
-      if (entry && !duplicates.has(entry.id)) {
-        duplicates.set(entry.id, { localItemID, matchType: "recid" });
-      }
-    }
-
-    for (const [arxivId, localItemID] of arxivMatches) {
-      const entry = entryByArxiv.get(arxivId);
-      if (entry && !duplicates.has(entry.id)) {
-        duplicates.set(entry.id, { localItemID, matchType: "arxiv" });
-      }
-    }
-
-    for (const [doi, localItemID] of doiMatches) {
-      const entry = entryByDOI.get(doi);
-      if (entry && !duplicates.has(entry.id)) {
-        duplicates.set(entry.id, { localItemID, matchType: "doi" });
-      }
-    }
-
     return duplicates;
   }
 
@@ -454,9 +544,9 @@ export class BatchImportManager {
    * Show duplicate detection dialog.
    */
   private showDuplicateDialog(
-    entries: InspireReferenceEntry[],
-    duplicates: Map<string, DuplicateInfo>,
-  ): Promise<InspireReferenceEntry[] | null> {
+    papers: SelectedPaper[],
+    duplicates: Map<SelectedPaper, DuplicateInfo>,
+  ): Promise<SelectedPaper[] | null> {
     return new Promise((resolve) => {
       const doc = this.options.getDocument();
       const body = this.options.getBody();
@@ -481,7 +571,7 @@ export class BatchImportManager {
       });
 
       // However the dialog closes, it also stops listening for Escape
-      const close = (result: InspireReferenceEntry[] | null) => {
+      const close = (result: SelectedPaper[] | null) => {
         this.closeDuplicateDialog = undefined;
         overlay.remove();
         doc.removeEventListener("keydown", escapeHandler);
@@ -489,6 +579,8 @@ export class BatchImportManager {
       };
       const escapeHandler = (e: KeyboardEvent) => {
         if (e.key === "Escape") {
+          // Handled here: a running update does not take it as a cancel
+          e.preventDefault();
           close(null);
         }
       };
@@ -543,11 +635,15 @@ export class BatchImportManager {
         marginBottom: "12px",
       });
 
-      const duplicateEntries = entries.filter((e) => duplicates.has(e.id));
-      const checkboxMap = new Map<string, HTMLInputElement>();
+      const duplicatePapers = papers.filter((p) => duplicates.has(p));
+      const hasGroups = Zotero.Libraries.getAll().some(
+        (library) => library.libraryType === "group",
+      );
+      const checkboxMap = new Map<SelectedPaper, HTMLInputElement>();
 
-      for (const entry of duplicateEntries) {
-        const match = duplicates.get(entry.id)!;
+      for (const paper of duplicatePapers) {
+        const [entry] = paper.entries;
+        const match = duplicates.get(paper)!;
         const item = doc.createElement("div");
         item.className = "zinspire-duplicate-dialog__item";
         Object.assign(item.style, {
@@ -563,7 +659,7 @@ export class BatchImportManager {
         checkbox.type = "checkbox";
         Object.assign(checkbox.style, { marginTop: "2px", flexShrink: "0" });
         checkbox.checked = false;
-        checkboxMap.set(entry.id, checkbox);
+        checkboxMap.set(paper, checkbox);
         item.appendChild(checkbox);
 
         const info = doc.createElement("div");
@@ -589,6 +685,23 @@ export class BatchImportManager {
         matchEl.textContent = getString(
           `references-panel-batch-duplicate-match-${match.matchType}`,
         );
+        // Several items have the paper (in one library or in several)
+        if (match.hits.length > 1) {
+          matchEl.textContent += ` ${getString(
+            "references-panel-batch-duplicate-items",
+            { args: { count: match.hits.length } },
+          )}`;
+        }
+        // With group libraries, say which libraries have the paper: the
+        // target is chosen after this dialog, and the paper may be wanted in
+        // another library all the same
+        const libraryIDs = [...new Set(match.hits.map((hit) => hit.libraryID))];
+        if (hasGroups) {
+          matchEl.textContent += ` ${getString(
+            "references-panel-batch-duplicate-libraries",
+            { args: { libraries: libraryIDs.map(libraryName).join(", ") } },
+          )}`;
+        }
         info.appendChild(matchEl);
 
         item.appendChild(info);
@@ -656,15 +769,12 @@ export class BatchImportManager {
         true,
       );
       confirmBtn.addEventListener("click", () => {
-        const result: InspireReferenceEntry[] = [];
-        for (const entry of entries) {
-          if (!duplicates.has(entry.id)) {
-            result.push(entry);
-          } else if (checkboxMap.get(entry.id)?.checked) {
-            result.push(entry);
-          }
-        }
-        close(result);
+        close(
+          papers.filter(
+            (paper) =>
+              !duplicates.has(paper) || checkboxMap.get(paper)?.checked,
+          ),
+        );
       });
       actions.appendChild(confirmBtn);
 
@@ -690,16 +800,20 @@ export class BatchImportManager {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Run batch import with progress display.
+   * Run batch import with progress display: import `papers`, of the
+   * `selectedPapers` (the others were skipped in the duplicate dialog).
    */
   private async runBatchImport(
-    entries: InspireReferenceEntry[],
+    selectedPapers: SelectedPaper[],
+    papers: SelectedPaper[],
     target: SaveTargetSelection,
+    duplicates: Map<SelectedPaper, DuplicateInfo>,
   ): Promise<BatchImportResult> {
-    const total = entries.length;
+    const total = papers.length;
     let done = 0;
-    let success = 0;
-    let failed = 0;
+    const outcomes: AddPaperOutcome[] = [];
+    const pdfs: Promise<ArxivPdfResult>[] = [];
+    const pdfOf = new Map<number, ArxivPdfResult>();
 
     // Setup cancellation
     this.importAbort = createAbortController();
@@ -713,99 +827,222 @@ export class BatchImportManager {
         this.importAbort?.abort();
       }
     };
-    const mainWindow = Zotero.getMainWindow();
-    mainWindow?.addEventListener("keydown", escapeHandler, true);
+    // In the panel's window (for the References panel, the main window)
+    const panelWindow =
+      this.options.getDocument().defaultView ?? Zotero.getMainWindow();
+    panelWindow?.addEventListener("keydown", escapeHandler, true);
 
-    // Progress window
-    const icon = `chrome://${config.addonRef}/content/icons/inspire-icon.png`;
-    const progressWindow = new ProgressWindowHelper(config.addonName);
-    progressWindow.win.changeHeadline(config.addonName, icon);
-    progressWindow.createLine({
-      text: getString("references-panel-batch-importing", {
+    // Progress display
+    const progress = this.options.reporter.startProgress(
+      getString("references-panel-batch-importing", {
         args: { done: 0, total },
       }),
-      progress: 0,
-    });
-    progressWindow.show(-1);
+    );
+
+    // The list's rows by paper, for writing each outcome to every row showing
+    // the paper
+    const rowsByKey = new Map<string, InspireReferenceEntry[]>();
+    for (const entry of this.options.getAllEntries()) {
+      for (const key of paperKeys(entry)) {
+        const rows = rowsByKey.get(key);
+        if (rows) rows.push(entry);
+        else rowsByKey.set(key, [entry]);
+      }
+    }
 
     // Concurrency limiter
     const CONCURRENCY = 3;
     let index = 0;
 
     const worker = async () => {
-      while (index < entries.length && !signal.aborted) {
+      while (index < papers.length && !signal.aborted) {
         const currentIndex = index++;
-        const entry = entries[currentIndex];
+        const paper = papers[currentIndex];
 
+        let outcome: AddPaperOutcome;
         try {
-          const newItem = await this.options.importReference(
-            entry.recid!,
+          outcome = await this.options.importEntry(
+            paper.entries[0],
             target,
+            signal,
           );
-          if (newItem) {
-            entry.localItemID = newItem.id;
-            entry.displayText = buildDisplayText(entry);
-            entry.searchText = "";
-            this.selectedEntryIDs.delete(entry.id);
-            this.options.updateRowStatus(entry);
-            success++;
-          } else {
-            failed++;
-          }
         } catch (err) {
           Zotero.debug(`[${config.addonName}] Batch import error: ${err}`);
-          failed++;
+          outcome = signal.aborted
+            ? { status: "cancelled" }
+            : { status: "failed", reason: "save", message: String(err) };
+        }
+        outcomes[currentIndex] = outcome;
+        if (outcome.status === "cancelled") continue;
+        if (outcome.status === "added") {
+          try {
+            this.markAdded(paper, outcome.item, rowsByKey);
+          } catch (err) {
+            Zotero.debug(`[${config.addonName}] Batch import rows: ${err}`);
+          }
+          const pdf = outcome.pdf;
+          if (pdf) {
+            pdfs.push(
+              pdf
+                .catch(
+                  (err): ArxivPdfResult => ({
+                    status: "failed",
+                    reason: "save",
+                    message: String(err),
+                  }),
+                )
+                .then((result) => {
+                  pdfOf.set(currentIndex, result);
+                  return result;
+                }),
+            );
+          }
         }
 
         done++;
         const percent = Math.round((done / total) * 100);
-        progressWindow.changeLine({
-          text: getString("references-panel-batch-importing", {
+        progress.update(
+          getString("references-panel-batch-importing", {
             args: { done, total },
           }),
-          progress: percent,
-        });
+          percent,
+        );
       }
     };
 
     try {
+      // Should it fail, each paper's import says why it was not added
+      await this.options
+        .prepareImport?.(
+          papers.map((paper) => paper.entries[0]),
+          target,
+          signal,
+        )
+        .catch((err) =>
+          Zotero.debug(`[${config.addonName}] Batch import: ${err}`),
+        );
       const workers: Promise<void>[] = [];
-      for (let i = 0; i < Math.min(CONCURRENCY, entries.length); i++) {
+      for (let i = 0; i < Math.min(CONCURRENCY, papers.length); i++) {
         workers.push(worker());
       }
       await Promise.all(workers);
-    } finally {
-      mainWindow?.removeEventListener("keydown", escapeHandler, true);
-      this.importAbort = undefined;
-
-      progressWindow.close();
-
-      // Show result toast
-      if (signal.aborted) {
-        this.options.showToast(
-          getString("references-panel-batch-import-cancelled", {
-            args: { done, total },
-          }),
-        );
-      } else if (failed > 0) {
-        this.options.showToast(
-          getString("references-panel-batch-import-partial", {
-            args: { success, total, failed },
-          }),
-        );
-      } else {
-        this.options.showToast(
-          getString("references-panel-batch-import-success", {
-            args: { count: success },
-          }),
+      // The PDFs are fetched after the items are saved; Escape still stops
+      // them
+      if (pdfs.length) {
+        let attached = 0;
+        const showPdfs = () =>
+          progress.update(
+            getString("references-panel-batch-attaching-pdfs", {
+              args: { done: attached, total: pdfs.length },
+            }),
+            Math.round((attached / pdfs.length) * 100),
+          );
+        showPdfs();
+        await Promise.all(
+          pdfs.map((pdf) =>
+            pdf.then(() => {
+              attached++;
+              showPdfs();
+            }),
+          ),
         );
       }
+    } finally {
+      panelWindow?.removeEventListener("keydown", escapeHandler, true);
+      this.importAbort = undefined;
 
-      this.updateAllCheckboxes();
-      this.notifySelectionChange();
+      progress.close();
     }
 
-    return { success, failed, cancelled: signal.aborted };
+    const added: AddedPaper[] = [];
+    const notAdded: NotAddedPaper[] = [];
+    const indexOf = new Map(papers.map((paper, i) => [paper, i]));
+    for (const paper of selectedPapers) {
+      const i = indexOf.get(paper);
+      if (i === undefined) {
+        notAdded.push(skippedPaper(paper, duplicates.get(paper)));
+        continue;
+      }
+      const outcome = outcomes[i] ?? { status: "cancelled" };
+      if (outcome.status === "added") {
+        const pdf = pdfOf.get(i);
+        added.push({
+          entries: paper.entries,
+          outcome,
+          ...(pdf ? { pdf } : {}),
+        });
+      } else {
+        notAdded.push({ entries: paper.entries, outcome });
+      }
+    }
+    const success = added.length;
+    // Of the papers imported, those not added for another reason than the
+    // cancel
+    const failed = outcomes.filter(
+      (o) => o && o.status !== "added" && o.status !== "cancelled",
+    ).length;
+
+    const result: BatchImportResult = {
+      success,
+      failed,
+      cancelled: signal.aborted,
+      added,
+      notAdded,
+    };
+    if (this.options.summarize) {
+      this.options.summarize(result);
+    } else if (signal.aborted) {
+      // Show result toast
+      this.options.reporter.notify(
+        getString("references-panel-batch-import-cancelled", {
+          args: { done, total },
+        }),
+      );
+    } else if (failed > 0) {
+      this.options.reporter.notify(
+        getString("references-panel-batch-import-partial", {
+          args: { success, total, failed },
+        }),
+      );
+    } else {
+      this.options.reporter.notify(
+        getString("references-panel-batch-import-success", {
+          args: { count: success },
+        }),
+      );
+    }
+
+    this.updateAllCheckboxes();
+    this.notifySelectionChange();
+
+    return result;
+  }
+
+  /**
+   * Show `item` as the paper's on every row showing it (the selected ones,
+   * and any other the list has), and unselect them
+   */
+  private markAdded(
+    paper: SelectedPaper,
+    item: Zotero.Item,
+    rowsByKey: ReadonlyMap<string, InspireReferenceEntry[]>,
+  ): void {
+    const rows = new Set(paper.entries);
+    for (const key of paper.entries.flatMap(paperKeys)) {
+      for (const entry of rowsByKey.get(key) ?? []) rows.add(entry);
+    }
+    for (const entry of rows) {
+      // The new item first, as the mark shows it, with the items already known
+      entry.localItemID = item.id;
+      entry.localItemIDs = [
+        item.id,
+        ...(entry.localItemIDs ?? []).filter((id) => id !== item.id),
+      ];
+      entry.displayText = buildDisplayText(entry);
+      entry.searchText = "";
+      this.selectedEntryIDs.delete(entry.id);
+      this.options.updateRowStatus(entry);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

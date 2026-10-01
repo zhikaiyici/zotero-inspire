@@ -6,6 +6,11 @@ import {
   type BatchImportManagerOptions,
 } from "../src/modules/inspire/panel/BatchImportManager";
 import { EntryListRenderer } from "../src/modules/inspire/panel/EntryListRenderer";
+import { findDuplicates } from "../src/modules/inspire/library/localStatus";
+import {
+  popupReporter,
+  type Reporter,
+} from "../src/modules/inspire/panel/reporter";
 import type { InspireReferenceEntry } from "../src/modules/inspire/types";
 import type { SaveTargetSelection } from "../src/modules/pickerUI";
 import { InspireReferencePanelController } from "../src/modules/zinspire";
@@ -15,15 +20,30 @@ import { InspireReferencePanelController } from "../src/modules/zinspire";
 // INSPIRE requests, clipboard and progress windows are replaced by fakes; the
 // panel's list, rows, toolbar and duplicate dialog are real DOM (jsdom).
 
+// The library: the item it has for each recid, arXiv ID and DOI, looked up
+// through the library index (libraryLookup)
+// (an item ID, or the hits of several items)
+type Hits = number | { itemID: number; libraryID: number; hasRecid: boolean }[];
 const library = vi.hoisted(() => ({
-  findItemsByRecids: vi.fn(),
-  findItemsByArxivs: vi.fn(),
-  findItemsByDOIs: vi.fn(),
+  recids: new Map<string, Hits>(),
+  arxivIds: new Map<string, Hits>(),
+  dois: new Map<string, Hits>(),
+  libraryLookup: vi.fn(),
+  // The user's libraries (My Library alone unless a test adds a group)
+  libraries: [] as { libraryID: number; libraryType: string }[],
 }));
+vi.mock(
+  "../src/modules/inspire/library/arxivIndex",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../src/modules/inspire/library/arxivIndex")
+    >()),
+    libraryLookup: library.libraryLookup,
+  }),
+);
 const clipboard = vi.hoisted(() => ({ copyToClipboard: vi.fn() }));
 vi.mock("../src/modules/inspire/apiUtils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/modules/inspire/apiUtils")>()),
-  ...library,
   ...clipboard,
 }));
 const network = vi.hoisted(() => ({ inspireFetch: vi.fn() }));
@@ -74,16 +94,38 @@ function msg(key: string, args?: Record<string, unknown>): string {
   return args ? `${id} ${JSON.stringify(args)}` : id;
 }
 
+/** Lookups in the library as it is when they run */
+function lookupNow() {
+  const hits = (found: Hits | undefined) =>
+    found === undefined
+      ? []
+      : typeof found === "number"
+        ? [{ itemID: found, libraryID: 1, hasRecid: true }]
+        : found;
+  return {
+    byRecid: vi.fn((recid: string) => hits(library.recids.get(recid))),
+    byArxiv: vi.fn((id: string) => hits(library.arxivIds.get(id))),
+    byDOI: vi.fn((doi: string) => hits(library.dois.get(doi))),
+  };
+}
+
 beforeEach(() => {
   progressWindows.length = 0;
-  for (const find of Object.values(library)) {
-    find.mockReset().mockResolvedValue(new Map());
-  }
+  library.recids.clear();
+  library.arxivIds.clear();
+  library.dois.clear();
+  library.libraries = [{ libraryID: 1, libraryType: "user" }];
+  library.libraryLookup.mockReset().mockImplementation(async () => lookupNow());
   clipboard.copyToClipboard.mockReset().mockResolvedValue(true);
   network.inspireFetch.mockReset();
   vi.stubGlobal("Zotero", {
     debug: vi.fn(),
     Prefs: { get: () => undefined },
+    Libraries: {
+      userLibraryID: 1,
+      get: (id: number) => ({ name: id === 1 ? "My Library" : `Group ${id}` }),
+      getAll: () => library.libraries,
+    },
   });
   // Toast-style progress windows opened through the global toolkit
   vi.stubGlobal("ztoolkit", {
@@ -142,6 +184,19 @@ function entry(
     searchText: "",
     ...fields,
   };
+}
+
+/**
+ * An entry whose paper the library has as item `itemID`, and which the list
+ * marks so
+ */
+function localEntry(
+  id: string,
+  itemID: number,
+  fields: Partial<InspireReferenceEntry> = {},
+): InspireReferenceEntry {
+  library.recids.set(`rec-${id}`, itemID);
+  return entry(id, { localItemID: itemID, ...fields });
 }
 
 const TARGET: SaveTargetSelection = {
@@ -211,6 +266,7 @@ function buttonIn(root: ParentNode, key: string) {
 function setUpManager(
   entries: InspireReferenceEntry[],
   visible: InspireReferenceEntry[] = entries,
+  extra: Partial<BatchImportManagerOptions> = {},
 ) {
   const dom = new JSDOM(
     "<!DOCTYPE html><body><div class='panel'></div></body>",
@@ -228,16 +284,43 @@ function setUpManager(
     getListElement: () => listEl,
     getAllEntries: () => entries,
     getFilteredEntries: () => view,
-    importReference: vi.fn<BatchImportManagerOptions["importReference"]>(),
+    // The panel's INSPIRE import of a recid (its importReference)
+    importReference:
+      vi.fn<
+        (
+          recid: string,
+          target: SaveTargetSelection,
+          signal: AbortSignal,
+        ) => Promise<Zotero.Item | null>
+      >(),
     promptForSaveTarget: vi
       .fn<BatchImportManagerOptions["promptForSaveTarget"]>()
       .mockResolvedValue(TARGET),
-    showToast: vi.fn<BatchImportManagerOptions["showToast"]>(),
+    // The notices the manager gives through its reporter
+    showToast: vi.fn<Reporter["notify"]>(),
     updateRowStatus: vi.fn<BatchImportManagerOptions["updateRowStatus"]>(),
     onSelectionChange: vi.fn<(count: number) => void>(),
     onImportStateChange: vi.fn<(inProgress: boolean) => void>(),
   };
-  const manager = new BatchImportManager(options);
+  // As the References panel imports a row: by its recid
+  const importEntry = vi.fn<BatchImportManagerOptions["importEntry"]>(
+    async (entry, target, signal) => {
+      const item = await options.importReference(entry.recid!, target, signal);
+      if (item) return { status: "added", route: "inspire", item, notes: [] };
+      return signal.aborted
+        ? { status: "cancelled" }
+        : { status: "failed", reason: "inspireRecord", message: "" };
+    },
+  );
+  const manager = new BatchImportManager({
+    ...options,
+    importEntry,
+    reporter: {
+      notify: options.showToast,
+      startProgress: (text) => popupReporter.startProgress(text),
+    },
+    ...extra,
+  });
   openedManagers.push(manager);
 
   /** Replace the list element, as the panel does when it re-renders. */
@@ -265,7 +348,7 @@ function setUpManager(
     dom,
     doc,
     body,
-    options,
+    options: { ...options, importEntry },
     manager,
     anchor,
     rerender,
@@ -399,9 +482,8 @@ describe("batch selection", () => {
 });
 
 describe("duplicate detection", () => {
-  it("takes entries already linked to local items, then recid, arXiv and DOI matches", async () => {
+  it("takes recid, then arXiv, then DOI matches", async () => {
     const entries = [
-      entry("local", { localItemID: 11, arxivDetails: { id: "2401.00001" } }),
       entry("byRecid", { recid: "2" }),
       entry("byArxiv", {
         recid: "3",
@@ -416,71 +498,85 @@ describe("duplicate detection", () => {
         doi: "10.1/f",
       }),
     ];
-    library.findItemsByRecids.mockResolvedValue(
-      new Map([
-        ["2", 21],
-        ["5", 25],
-      ]),
-    );
-    library.findItemsByArxivs.mockResolvedValue(
-      new Map([
-        ["2403.00003", 23],
-        ["2405.00005", 26],
-      ]),
-    );
-    library.findItemsByDOIs.mockResolvedValue(
-      new Map([
-        ["10.1/c", 24],
-        ["10.1/d", 27],
-      ]),
-    );
-    const { manager } = setUpManager(entries);
+    library.recids.set("2", 21).set("5", 25);
+    library.arxivIds.set("2403.00003", 23).set("2405.00005", 26);
+    library.dois.set("10.1/c", 24).set("10.1/d", 27);
+    const duplicates = await findDuplicates(entries);
 
-    const duplicates = await (manager as any).detectDuplicates(entries);
-
-    expect(Object.fromEntries(duplicates)).toEqual({
-      local: { localItemID: 11, matchType: "recid" },
-      byRecid: { localItemID: 21, matchType: "recid" },
-      byArxiv: { localItemID: 23, matchType: "arxiv" },
-      byDoi: { localItemID: 27, matchType: "doi" },
-      recidFirst: { localItemID: 25, matchType: "recid" },
+    const hit = (itemID: number, ...by: string[]) => ({
+      itemID,
+      libraryID: 1,
+      hasRecid: true,
+      by,
     });
-    // Entries already linked to a local item are not looked up again
-    expect(library.findItemsByRecids).toHaveBeenCalledWith([
-      "2",
-      "3",
-      "4",
-      "5",
-      "6",
-    ]);
-    expect(library.findItemsByArxivs).toHaveBeenCalledWith([
-      "2403.00003",
-      "2405.00005",
-      "2406.00006",
-    ]);
-    expect(library.findItemsByDOIs).toHaveBeenCalledWith([
-      "10.1/c",
-      "10.1/d",
-      "10.1/f",
-    ]);
+    expect(Object.fromEntries(duplicates)).toEqual({
+      byRecid: {
+        localItemID: 21,
+        matchType: "recid",
+        hits: [hit(21, "recid")],
+      },
+      byArxiv: {
+        localItemID: 23,
+        matchType: "arxiv",
+        hits: [hit(23, "arxiv"), hit(24, "doi")],
+      },
+      byDoi: { localItemID: 27, matchType: "doi", hits: [hit(27, "doi")] },
+      recidFirst: {
+        localItemID: 25,
+        matchType: "recid",
+        hits: [hit(25, "recid"), hit(26, "arxiv")],
+      },
+    });
   });
 
-  it("does not search the library when every entry is already local", async () => {
+  // Intentional change: every item that has the paper is kept, not only the
+  // first found by each identifier
+  it("keeps every item found, those with a recid first, then by item ID", async () => {
+    library.arxivIds.set("2401.00001", [
+      { itemID: 40, libraryID: 1, hasRecid: true },
+      { itemID: 31, libraryID: 2, hasRecid: false },
+      { itemID: 35, libraryID: 1, hasRecid: false },
+    ]);
+    library.dois.set("10.1/a", [
+      { itemID: 31, libraryID: 2, hasRecid: false },
+      { itemID: 50, libraryID: 1, hasRecid: false },
+    ]);
+
+    const duplicates = await findDuplicates([
+      entry("a", { arxivDetails: { id: "arXiv:2401.00001v2" }, doi: "10.1/a" }),
+    ]);
+
+    expect(duplicates.get("a")).toEqual({
+      localItemID: 40,
+      matchType: "arxiv",
+      hits: [
+        { itemID: 40, libraryID: 1, hasRecid: true, by: ["arxiv"] },
+        { itemID: 31, libraryID: 2, hasRecid: false, by: ["arxiv", "doi"] },
+        { itemID: 35, libraryID: 1, hasRecid: false, by: ["arxiv"] },
+        { itemID: 50, libraryID: 1, hasRecid: false, by: ["doi"] },
+      ],
+    });
+  });
+
+  // Intentional change: an entry marked as in the library is looked up like
+  // the others (before, its mark was taken as it was, without a lookup, so a
+  // mark left from an item since moved to the trash blocked the import)
+  it("looks up entries the list marks as in the library too", async () => {
     const entries = [
-      entry("a", { localItemID: 1 }),
+      localEntry("a", 1),
+      // Marked, but its item is no longer in the library
       entry("b", { localItemID: 2 }),
     ];
-    const { manager } = setUpManager(entries);
-
-    const duplicates = await (manager as any).detectDuplicates(entries);
+    const duplicates = await findDuplicates(entries);
 
     expect(Object.fromEntries(duplicates)).toEqual({
-      a: { localItemID: 1, matchType: "recid" },
-      b: { localItemID: 2, matchType: "recid" },
+      a: {
+        localItemID: 1,
+        matchType: "recid",
+        hits: [{ itemID: 1, libraryID: 1, hasRecid: true, by: ["recid"] }],
+      },
     });
-    expect(library.findItemsByRecids).not.toHaveBeenCalled();
-    expect(library.findItemsByArxivs).not.toHaveBeenCalled();
-    expect(library.findItemsByDOIs).not.toHaveBeenCalled();
+    expect(library.libraryLookup).toHaveBeenCalledOnce();
   });
 });
 
@@ -509,11 +605,11 @@ describe("duplicate dialog", () => {
   it("lists the duplicates unticked in the panel's dialog style and imports the ticked ones with the rest", async () => {
     const entries = [
       entry("a"),
-      entry("b", { localItemID: 12 }),
+      localEntry("b", 12),
       entry("c", { doi: "10.1/c" }),
       entry("d"),
     ];
-    library.findItemsByDOIs.mockResolvedValue(new Map([["10.1/c", 13]]));
+    library.dois.set("10.1/c", 13);
     const panel = setUpManager(entries);
     panel.options.importReference.mockResolvedValue({ id: 100 } as any);
     panel.manager.selectAll();
@@ -559,14 +655,44 @@ describe("duplicate dialog", () => {
     expect(
       panel.options.importReference.mock.calls.map(([recid]) => recid),
     ).toEqual(["rec-a", "rec-c", "rec-d"]);
-    expect(result).toEqual({ success: 3, failed: 0, cancelled: false });
+    expect(result).toMatchObject({ success: 3, failed: 0, cancelled: false });
+  });
+
+  it("gives the result to the caller's summary instead of its notice, also when every paper was skipped", async () => {
+    const summarize = vi.fn();
+    const entries = [localEntry("a", 1), localEntry("b", 2)];
+    const panel = setUpManager(entries, entries, { summarize });
+    panel.manager.selectAll();
+
+    const run = panel.manager.handleBatchImport(panel.anchor);
+    const dialog = await panel.dialog();
+    buttonIn(dialog, "references-panel-batch-duplicate-confirm").click();
+    const result = await run;
+
+    expect(panel.options.promptForSaveTarget).not.toHaveBeenCalled();
+    expect(summarize).toHaveBeenCalledWith(result);
+    expect(result!.notAdded.map((paper) => paper.outcome.status)).toEqual([
+      "inLibrary",
+      "inLibrary",
+    ]);
+    expect(panel.options.showToast).not.toHaveBeenCalled();
+  });
+
+  it("ticks and unticks given rows", () => {
+    const entries = [entry("a"), entry("b"), entry("c")];
+    const panel = setUpManager(entries);
+    panel.manager.setSelected([entries[0], entries[2]], true);
+    expect([...panel.manager.getSelectedEntryIDs()]).toEqual([
+      entries[0].id,
+      entries[2].id,
+    ]);
+    expect(panel.options.onSelectionChange).toHaveBeenLastCalledWith(2);
+    panel.manager.setSelected([entries[0]], false);
+    expect([...panel.manager.getSelectedEntryIDs()]).toEqual([entries[2].id]);
   });
 
   it("ticks or unticks every duplicate at once", async () => {
-    const entries = [
-      entry("a", { localItemID: 1 }),
-      entry("b", { localItemID: 2 }),
-    ];
+    const entries = [localEntry("a", 1), localEntry("b", 2)];
     const panel = setUpManager(entries);
     panel.options.importReference.mockResolvedValue({ id: 100 } as any);
     panel.manager.selectAll();
@@ -581,7 +707,11 @@ describe("duplicate dialog", () => {
     buttonIn(dialog, "references-panel-batch-duplicate-import-all").click();
     buttonIn(dialog, "references-panel-batch-duplicate-confirm").click();
 
-    expect(await run).toEqual({ success: 2, failed: 0, cancelled: false });
+    expect(await run).toMatchObject({
+      success: 2,
+      failed: 0,
+      cancelled: false,
+    });
   });
 
   it.each([
@@ -590,7 +720,7 @@ describe("duplicate dialog", () => {
     ["a click beside the dialog", "backdrop"],
     ["its panel going away", "dispose"],
   ])("closes without importing on %s", async (_label, how) => {
-    const entries = [entry("a", { localItemID: 1 }), entry("b")];
+    const entries = [localEntry("a", 1), entry("b")];
     const panel = setUpManager(entries);
     panel.manager.selectAll();
 
@@ -614,6 +744,23 @@ describe("duplicate dialog", () => {
     expect(panel.selected()).toEqual(["a", "b"]);
   });
 
+  it("marks the Escape that closes it as handled", async () => {
+    const panel = setUpManager([localEntry("a", 1), entry("b")]);
+    panel.manager.selectAll();
+
+    const run = panel.manager.handleBatchImport(panel.anchor);
+    await panel.dialog();
+    const escape = new panel.dom.window.KeyboardEvent("keydown", {
+      key: "Escape",
+      cancelable: true,
+    });
+    panel.doc.dispatchEvent(escape);
+
+    expect(await run).toBeNull();
+    // A metadata update going on meanwhile leaves such an Escape alone
+    expect(escape.defaultPrevented).toBe(true);
+  });
+
   it.each([
     ["the Cancel button", "cancel"],
     ["the Confirm button", "confirm"],
@@ -621,7 +768,7 @@ describe("duplicate dialog", () => {
     ["a click beside the dialog", "backdrop"],
     ["its panel going away", "dispose"],
   ])("stops listening for Escape once closed with %s", async (_label, how) => {
-    const panel = setUpManager([entry("a", { localItemID: 1 }), entry("b")]);
+    const panel = setUpManager([localEntry("a", 1), entry("b")]);
     panel.options.promptForSaveTarget.mockResolvedValue(null);
     panel.manager.selectAll();
     const added = vi.spyOn(panel.doc, "addEventListener");
@@ -649,19 +796,20 @@ describe("duplicate dialog", () => {
     async (_label, found) => {
       const panel = setUpManager([entry("a")]);
       let finishSearch = () => {};
-      library.findItemsByRecids.mockImplementationOnce(
+      library.libraryLookup.mockImplementationOnce(
         () =>
           new Promise((resolve) => {
-            finishSearch = () => resolve(new Map(found ? [["rec-a", 1]] : []));
+            finishSearch = () => {
+              if (found) library.recids.set("rec-a", 1);
+              resolve(lookupNow());
+            };
           }),
       );
       const added = vi.spyOn(panel.doc, "addEventListener");
       panel.manager.selectAll();
 
       const run = panel.manager.handleBatchImport(panel.anchor);
-      await vi.waitFor(() =>
-        expect(library.findItemsByRecids).toHaveBeenCalled(),
-      );
+      await vi.waitFor(() => expect(library.libraryLookup).toHaveBeenCalled());
       panel.manager.dispose();
       // The import ends without waiting for the search, whose late result
       // then changes nothing
@@ -692,23 +840,194 @@ describe("duplicate dialog", () => {
     panel.manager.dispose();
     answer(TARGET);
 
-    expect(await run).toEqual({ success: 1, failed: 0, cancelled: false });
-    expect(panel.options.importReference).toHaveBeenCalledWith("rec-a", TARGET);
+    expect(await run).toMatchObject({
+      success: 1,
+      failed: 0,
+      cancelled: false,
+    });
+    expect(panel.options.importReference).toHaveBeenCalledWith(
+      "rec-a",
+      TARGET,
+      expect.anything(),
+    );
   });
 
-  it("has nothing to import when every duplicate is skipped", async () => {
-    const panel = setUpManager([entry("a", { localItemID: 1 })]);
+  it("lists the papers skipped in the dialog as in the library, not as failed", async () => {
+    const panel = setUpManager([localEntry("a", 12), entry("b")]);
+    panel.options.importReference.mockResolvedValue({ id: 100 } as any);
+    panel.manager.selectAll();
+
+    const run = panel.manager.handleBatchImport(panel.anchor);
+    buttonIn(
+      await panel.dialog(),
+      "references-panel-batch-duplicate-confirm",
+    ).click();
+    const result = await run;
+
+    expect(result).toMatchObject({ success: 1, failed: 0, cancelled: false });
+    expect(result!.added.map((p) => p.entries[0].id)).toEqual(["b"]);
+    expect(result!.notAdded).toEqual([
+      {
+        entries: [expect.objectContaining({ id: "a" })],
+        outcome: {
+          status: "inLibrary",
+          hits: [{ itemID: 12, libraryID: 1, hasRecid: true, by: ["recid"] }],
+          doiOnly: false,
+        },
+      },
+    ]);
+    expect(panel.options.showToast).toHaveBeenLastCalledWith(
+      msg("references-panel-batch-import-success", { count: 1 }),
+    );
+  });
+
+  it("names the library of each duplicate when the user has group libraries", async () => {
+    library.libraries.push({ libraryID: 2, libraryType: "group" });
+    const panel = setUpManager([localEntry("a", 1)]);
+    panel.manager.selectAll();
+
+    const run = panel.manager.handleBatchImport(panel.anchor);
+    const dialog = await panel.dialog();
+    expect(
+      dialog.querySelector(".zinspire-duplicate-dialog__item")!.textContent,
+    ).toBe(
+      `Paper a${msg("references-panel-batch-duplicate-match-recid")} ${msg(
+        "references-panel-batch-duplicate-libraries",
+        { libraries: "My Library" },
+      )}`,
+    );
+    buttonIn(dialog, "references-panel-batch-duplicate-cancel").click();
+    expect(await run).toBeNull();
+  });
+
+  it("has nothing to import when every duplicate is skipped, and lists them as in the library", async () => {
+    const panel = setUpManager([localEntry("a", 1)]);
     panel.manager.selectAll();
 
     const run = panel.manager.handleBatchImport(panel.anchor);
     const dialog = await panel.dialog();
     buttonIn(dialog, "references-panel-batch-duplicate-confirm").click();
 
-    expect(await run).toBeNull();
+    expect(await run).toEqual({
+      success: 0,
+      failed: 0,
+      cancelled: false,
+      added: [],
+      notAdded: [
+        {
+          entries: [expect.objectContaining({ id: "a" })],
+          outcome: {
+            status: "inLibrary",
+            hits: [{ itemID: 1, libraryID: 1, hasRecid: true, by: ["recid"] }],
+            doiOnly: false,
+          },
+        },
+      ],
+    });
     expect(panel.options.showToast).toHaveBeenCalledWith(
       msg("references-panel-batch-no-selection"),
     );
     expect(panel.options.promptForSaveTarget).not.toHaveBeenCalled();
+  });
+});
+
+describe("one paper on several rows", () => {
+  /** A row of the arXiv browser: the paper announced on `day` */
+  function dayRow(
+    arxivId: string,
+    day: string,
+    fields: Partial<InspireReferenceEntry> = {},
+  ) {
+    return entry(`arxiv-${arxivId}-${day}`, {
+      arxivDetails: { id: arxivId },
+      recid: `rec-${arxivId}`,
+      title: `Paper ${arxivId}`,
+      ...fields,
+    });
+  }
+
+  // Intentional change: before, each row was imported, so a paper shown on
+  // two rows was added twice
+  it("imports a paper shown on two rows once and marks every row showing it", async () => {
+    const first = dayRow("2609.00001", "2026-09-24");
+    const second = dayRow("2609.00001", "2026-09-25");
+    // Not selected: a third day's row of the same paper
+    const third = dayRow("2609.00001", "2026-09-28", { recid: undefined });
+    const other = dayRow("2609.00002", "2026-09-24");
+    const panel = setUpManager([first, second, third, other]);
+    panel.options.importReference.mockImplementation(async (recid) =>
+      recid === "rec-2609.00001" ? ({ id: 70 } as any) : ({ id: 71 } as any),
+    );
+    panel.click(first.id);
+    panel.click(second.id);
+    panel.click(other.id);
+
+    const result = await panel.manager.handleBatchImport(panel.anchor);
+
+    expect(
+      panel.options.importReference.mock.calls.map(([recid]) => recid),
+    ).toEqual(["rec-2609.00001", "rec-2609.00002"]);
+    expect(result).toMatchObject({ success: 2, failed: 0, cancelled: false });
+    expect([first, second, third, other].map((e) => e.localItemID)).toEqual([
+      70, 70, 70, 71,
+    ]);
+    expect(
+      panel.options.updateRowStatus.mock.calls.map(([e]) => e.id).sort(),
+    ).toEqual([first.id, second.id, third.id, other.id].sort());
+    expect(panel.selected()).toEqual([]);
+    expect(progressWindows[0].lines.at(-1)!.text).toBe(
+      msg("references-panel-batch-importing", { done: 2, total: 2 }),
+    );
+  });
+
+  it("imports a reference the list shows twice once", async () => {
+    const entries = [
+      entry("x1", { recid: "rec-x" }),
+      entry("x2", { recid: "rec-x" }),
+    ];
+    const panel = setUpManager(entries);
+    panel.options.importReference.mockResolvedValue({ id: 80 } as any);
+    panel.manager.selectAll();
+
+    await panel.manager.handleBatchImport(panel.anchor);
+
+    expect(panel.options.importReference).toHaveBeenCalledOnce();
+    expect(entries.map((e) => e.localItemID)).toEqual([80, 80]);
+  });
+
+  it("lists a paper shown on two rows once in the duplicate dialog, with the number of items", async () => {
+    library.libraries.push({ libraryID: 2, libraryType: "group" });
+    library.arxivIds.set("2609.00003", [
+      { itemID: 5, libraryID: 1, hasRecid: true },
+      { itemID: 6, libraryID: 2, hasRecid: false },
+    ]);
+    const panel = setUpManager([
+      dayRow("2609.00003", "2026-09-24"),
+      dayRow("2609.00003", "2026-09-25"),
+    ]);
+    panel.manager.selectAll();
+
+    const run = panel.manager.handleBatchImport(panel.anchor);
+    const dialog = await panel.dialog();
+
+    expect(
+      dialog.querySelector(".zinspire-duplicate-dialog__message")!.textContent,
+    ).toBe(msg("references-panel-batch-duplicate-message", { count: 1 }));
+    const items = [
+      ...dialog.querySelectorAll(".zinspire-duplicate-dialog__item"),
+    ];
+    expect(items.map((item) => item.textContent)).toEqual([
+      `Paper 2609.00003${msg("references-panel-batch-duplicate-match-arxiv")} ${msg(
+        "references-panel-batch-duplicate-items",
+        { count: 2 },
+      )} ${msg("references-panel-batch-duplicate-libraries", {
+        libraries: "My Library, Group 2",
+      })}`,
+    ]);
+    buttonIn(dialog, "references-panel-batch-duplicate-import-all").click();
+    buttonIn(dialog, "references-panel-batch-duplicate-confirm").click();
+    await run;
+    expect(panel.options.importReference).toHaveBeenCalledOnce();
   });
 });
 
@@ -727,7 +1046,7 @@ describe("batch import", () => {
     expect(panel.options.showToast).toHaveBeenLastCalledWith(
       msg("references-panel-batch-no-selection"),
     );
-    expect(library.findItemsByRecids).not.toHaveBeenCalled();
+    expect(library.libraryLookup).not.toHaveBeenCalled();
     expect(panel.options.promptForSaveTarget).not.toHaveBeenCalled();
   });
 
@@ -771,7 +1090,7 @@ describe("batch import", () => {
     }
     const result = await run;
 
-    expect(result).toEqual({ success: 4, failed: 3, cancelled: false });
+    expect(result).toMatchObject({ success: 4, failed: 3, cancelled: false });
     expect(imports.maxInFlight()).toBe(3);
     expect(imports.calls.map((call) => call.recid)).toEqual(
       ids.map((id) => `rec-${id}`),
@@ -826,7 +1145,7 @@ describe("batch import", () => {
     panel.options.importReference.mockResolvedValue({ id: 100 } as any);
     panel.manager.selectAll();
 
-    expect(await panel.manager.handleBatchImport(panel.anchor)).toEqual({
+    expect(await panel.manager.handleBatchImport(panel.anchor)).toMatchObject({
       success: 2,
       failed: 0,
       cancelled: false,
@@ -852,7 +1171,11 @@ describe("batch import", () => {
     expect(progressWindows).toHaveLength(1);
 
     for (const call of imports.calls) call.settle(100);
-    expect(await first).toEqual({ success: 2, failed: 0, cancelled: false });
+    expect(await first).toMatchObject({
+      success: 2,
+      failed: 0,
+      cancelled: false,
+    });
     expect(imports.calls).toHaveLength(2);
     expect(panel.options.onImportStateChange.mock.calls).toEqual([
       [true],
@@ -861,7 +1184,7 @@ describe("batch import", () => {
   });
 
   it("ignores Import while the duplicate dialog or the save-target prompt is open", async () => {
-    const panel = setUpManager([entry("a", { localItemID: 1 }), entry("b")]);
+    const panel = setUpManager([localEntry("a", 1), entry("b")]);
     let answer: (target: SaveTargetSelection | null) => void = () => {};
     panel.options.promptForSaveTarget.mockImplementation(
       () => new Promise((resolve) => (answer = resolve)),
@@ -896,13 +1219,13 @@ describe("batch import", () => {
     ["the save-target prompt fails", "prompt"],
   ])("allows the next import after %s", async (_label, how) => {
     const panel = setUpManager([
-      entry("a", { localItemID: how === "dialog" ? 1 : undefined }),
+      how === "dialog" ? localEntry("a", 1) : entry("a"),
     ]);
     panel.manager.selectAll();
     if (how === "target") {
       panel.options.promptForSaveTarget.mockResolvedValueOnce(null);
     } else if (how === "lookup") {
-      library.findItemsByRecids.mockRejectedValueOnce(new Error("locked"));
+      library.libraryLookup.mockRejectedValueOnce(new Error("locked"));
     } else if (how === "prompt") {
       panel.options.promptForSaveTarget.mockRejectedValueOnce(
         new Error("locked"),
@@ -935,7 +1258,11 @@ describe("batch import", () => {
         "references-panel-batch-duplicate-confirm",
       ).click();
     }
-    expect(await next).toEqual({ success: 1, failed: 0, cancelled: false });
+    expect(await next).toMatchObject({
+      success: 1,
+      failed: 0,
+      cancelled: false,
+    });
   });
 
   it("runs one batch import at a time across panels", async () => {
@@ -956,11 +1283,13 @@ describe("batch import", () => {
     imports.calls[0].settle(100);
     await run;
     expect(second.options.onImportStateChange).toHaveBeenLastCalledWith(false);
-    expect(await second.manager.handleBatchImport(second.anchor)).toEqual({
-      success: 1,
-      failed: 0,
-      cancelled: false,
-    });
+    expect(await second.manager.handleBatchImport(second.anchor)).toMatchObject(
+      {
+        success: 1,
+        failed: 0,
+        cancelled: false,
+      },
+    );
   });
 
   it.each([
@@ -972,7 +1301,7 @@ describe("batch import", () => {
     "lets the other panels import again after a panel closes %s",
     async (_label, phase) => {
       const first = setUpManager([
-        entry("a", { localItemID: phase === "dialog" ? 1 : undefined }),
+        phase === "dialog" ? localEntry("a", 1) : entry("a"),
       ]);
       const second = setUpManager([entry("b")]);
       second.options.importReference.mockResolvedValue({ id: 100 } as any);
@@ -980,10 +1309,13 @@ describe("batch import", () => {
       second.manager.selectAll();
       let finishSearch = () => {};
       if (phase === "search") {
-        library.findItemsByRecids.mockImplementationOnce(
+        library.libraryLookup.mockImplementationOnce(
           () =>
             new Promise((resolve) => {
-              finishSearch = () => resolve(new Map([["rec-a", 1]]));
+              finishSearch = () => {
+                library.recids.set("rec-a", 1);
+                resolve(lookupNow());
+              };
             }),
         );
       }
@@ -1015,16 +1347,25 @@ describe("batch import", () => {
       answer(null);
       if (phase === "import") imports.calls[0].settle(100);
 
-      expect(await run).toEqual(
-        phase === "import" ? { success: 1, failed: 0, cancelled: false } : null,
-      );
+      const result = await run;
+      if (phase === "import") {
+        expect(result).toMatchObject({
+          success: 1,
+          failed: 0,
+          cancelled: false,
+        });
+      } else {
+        expect(result).toBeNull();
+      }
       expect(second.manager.isImportInProgress()).toBe(false);
       expect(second.options.onImportStateChange).toHaveBeenLastCalledWith(
         false,
       );
       // The closed panel is no longer told about imports
       first.options.onImportStateChange.mockClear();
-      expect(await second.manager.handleBatchImport(second.anchor)).toEqual({
+      expect(
+        await second.manager.handleBatchImport(second.anchor),
+      ).toMatchObject({
         success: 1,
         failed: 0,
         cancelled: false,
@@ -1046,7 +1387,7 @@ describe("batch import", () => {
     panel.options.importReference.mockResolvedValue({ id: 100 } as any);
     panel.manager.selectAll();
 
-    expect(await panel.manager.handleBatchImport(panel.anchor)).toEqual({
+    expect(await panel.manager.handleBatchImport(panel.anchor)).toMatchObject({
       success: 1,
       failed: 0,
       cancelled: false,
@@ -1078,7 +1419,7 @@ describe("batch import", () => {
     for (const call of imports.calls) call.settle(100);
     const result = await run;
 
-    expect(result).toEqual({ success: 3, failed: 0, cancelled: true });
+    expect(result).toMatchObject({ success: 3, failed: 0, cancelled: true });
     expect(imports.calls).toHaveLength(3);
     expect(panel.options.showToast).toHaveBeenLastCalledWith(
       msg("references-panel-batch-import-cancelled", { done: 3, total: 5 }),
@@ -1090,11 +1431,236 @@ describe("batch import", () => {
     expect(escape().defaultPrevented).toBe(false);
     // and the rest can be imported
     panel.options.importReference.mockResolvedValue({ id: 101 } as any);
-    expect(await panel.manager.handleBatchImport(panel.anchor)).toEqual({
+    expect(await panel.manager.handleBatchImport(panel.anchor)).toMatchObject({
       success: 2,
       failed: 0,
       cancelled: false,
     });
+  });
+
+  it("in a window of its own, reports through its reporter and stops on Escape there", async () => {
+    const ids = ["r1", "r2", "r3", "r4", "r5"];
+    const panel = setUpManager(ids.map((id) => entry(id)));
+    // The main Zotero window is another window than the panel's
+    const mainWindow = new JSDOM("", { url: "https://zotero.test/" }).window;
+    (globalThis as any).Zotero.getMainWindow = () => mainWindow;
+    const shown: string[] = [];
+    const manager = new BatchImportManager({
+      ...panel.options,
+      reporter: {
+        notify: (message) => shown.push(`notice: ${message}`),
+        startProgress: (text) => {
+          shown.push(`progress: ${text}`);
+          return {
+            update: (text, percent) => shown.push(`${percent} %: ${text}`),
+            close: () => shown.push("progress closed"),
+          };
+        },
+      },
+    });
+    openedManagers.push(manager);
+    const imports = holdImports(panel.options);
+    manager.selectAll();
+    const escape = (win: typeof mainWindow) => {
+      const event = new win.KeyboardEvent("keydown", {
+        key: "Escape",
+        cancelable: true,
+      });
+      win.dispatchEvent(event);
+      return event;
+    };
+
+    const run = manager.handleBatchImport(panel.anchor);
+    await vi.waitFor(() => expect(imports.calls).toHaveLength(3));
+    imports.calls[0].settle(100);
+    await vi.waitFor(() => expect(imports.calls).toHaveLength(4));
+    expect(escape(mainWindow).defaultPrevented).toBe(false);
+    expect(escape(panel.dom.window).defaultPrevented).toBe(true);
+    for (const call of imports.calls.slice(1)) call.settle(100);
+
+    expect(await run).toMatchObject({ success: 4, failed: 0, cancelled: true });
+    const importing = (done: number) =>
+      msg("references-panel-batch-importing", { done, total: 5 });
+    expect(shown).toEqual([
+      `progress: ${importing(0)}`,
+      `20 %: ${importing(1)}`,
+      `40 %: ${importing(2)}`,
+      `60 %: ${importing(3)}`,
+      `80 %: ${importing(4)}`,
+      "progress closed",
+      `notice: ${msg("references-panel-batch-import-cancelled", { done: 4, total: 5 })}`,
+    ]);
+    // Nothing went to the popups by the main window
+    expect(progressWindows).toHaveLength(0);
+    expect(panel.options.showToast).not.toHaveBeenCalled();
+  });
+});
+
+describe("cancelling, and what the import ends with", () => {
+  const abortError = () =>
+    Object.assign(new Error("aborted"), { name: "AbortError" });
+  const escapeIn = (panel: ReturnType<typeof setUpManager>) =>
+    panel.dom.window.dispatchEvent(
+      new panel.dom.window.KeyboardEvent("keydown", {
+        key: "Escape",
+        cancelable: true,
+      }),
+    );
+
+  it("ends the papers under way on Escape and lists the papers added and not added", async () => {
+    const entries = ["a", "b", "c", "d", "e"].map((id) => entry(id));
+    const panel = setUpManager(entries);
+    const signals: AbortSignal[] = [];
+    panel.options.importEntry.mockImplementation(async (e, _target, signal) => {
+      signals.push(signal);
+      if (e.id === "a") {
+        return {
+          status: "added",
+          route: "inspire",
+          item: { id: 1 } as any,
+          notes: [],
+        };
+      }
+      if (e.id === "b") {
+        return { status: "failed", reason: "inspireRecord", message: "gone" };
+      }
+      // Waits for the network until the cancel ends its request
+      await new Promise((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(abortError())),
+      );
+      throw new Error("unreachable");
+    });
+    panel.manager.selectAll();
+
+    const run = panel.manager.handleBatchImport(panel.anchor);
+    await vi.waitFor(() => expect(signals).toHaveLength(5));
+    expect(signals.some((signal) => signal.aborted)).toBe(false);
+    escapeIn(panel);
+    const result = await run;
+
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(result!.cancelled).toBe(true);
+    expect(result!.added.map((p) => p.entries.map((e) => e.id))).toEqual([
+      ["a"],
+    ]);
+    expect(
+      result!.notAdded.map((p) => [p.entries[0].id, p.outcome.status]),
+    ).toEqual([
+      ["b", "failed"],
+      ["c", "cancelled"],
+      ["d", "cancelled"],
+      ["e", "cancelled"],
+    ]);
+    expect(result).toMatchObject({ success: 1, failed: 1 });
+    // Done: the papers that ended otherwise than by the cancel
+    expect(panel.options.showToast).toHaveBeenLastCalledWith(
+      msg("references-panel-batch-import-cancelled", { done: 2, total: 5 }),
+    );
+    expect(panel.selected()).toEqual(["b", "c", "d", "e"]);
+  });
+
+  it("waits for the PDFs of the papers added, which Escape stops too", async () => {
+    const panel = setUpManager([entry("a"), entry("b")]);
+    const pdfSignals: AbortSignal[] = [];
+    let attachA: (value: any) => void = () => {};
+    panel.options.importEntry.mockImplementation(async (e, _target, signal) => {
+      const pdf =
+        e.id === "a"
+          ? new Promise<any>((resolve) => (attachA = resolve))
+          : new Promise<any>((resolve) => {
+              pdfSignals.push(signal);
+              signal.addEventListener("abort", () =>
+                resolve({ status: "failed", reason: "cancelled", message: "" }),
+              );
+            });
+      return {
+        status: "added",
+        route: "arxiv",
+        item: { id: e.id === "a" ? 1 : 2 } as any,
+        notes: [],
+        pdf,
+      };
+    });
+    panel.manager.selectAll();
+
+    const run = panel.manager.handleBatchImport(panel.anchor);
+    await vi.waitFor(() =>
+      expect(progressWindows[0]?.lines.at(-1)?.text).toBe(
+        msg("references-panel-batch-attaching-pdfs", { done: 0, total: 2 }),
+      ),
+    );
+    attachA({ status: "attached", attachment: { id: 10 } });
+    await vi.waitFor(() =>
+      expect(progressWindows[0].lines.at(-1)).toEqual({
+        text: msg("references-panel-batch-attaching-pdfs", {
+          done: 1,
+          total: 2,
+        }),
+        progress: 50,
+      }),
+    );
+    expect(panel.manager.isImportInProgress()).toBe(true);
+    escapeIn(panel);
+    const result = await run;
+
+    expect(pdfSignals[0].aborted).toBe(true);
+    expect(result!.added.map((p) => [p.entries[0].id, p.pdf?.status])).toEqual([
+      ["a", "attached"],
+      ["b", "failed"],
+    ]);
+    expect(progressWindows[0].closed).toBe(true);
+  });
+
+  it("imports rows without a recid when the caller can, after one preparation for every paper", async () => {
+    const rows = [
+      entry("arxiv-2609.00011-2026-09-24", {
+        recid: undefined,
+        arxivDetails: { id: "2609.00011" },
+      }),
+      entry("arxiv-2609.00011-2026-09-25", {
+        recid: undefined,
+        arxivDetails: { id: "2609.00011" },
+      }),
+      entry("arxiv-2609.00012-2026-09-24", {
+        recid: undefined,
+        arxivDetails: { id: "2609.00012" },
+      }),
+    ];
+    const panel = setUpManager(rows);
+    const calls: string[] = [];
+    const manager = new BatchImportManager({
+      ...panel.options,
+      reporter: {
+        notify: () => undefined,
+        startProgress: () => ({ update() {}, close() {} }),
+      },
+      canImport: (e) => !!e.arxivDetails,
+      prepareImport: async (entries, target, signal) => {
+        calls.push(
+          `prepare ${entries.map((e) => e.id).join(" ")} ${target === TARGET} ${signal.aborted}`,
+        );
+      },
+      importEntry: async (e) => {
+        calls.push(`import ${e.id}`);
+        return {
+          status: "added",
+          route: "arxiv",
+          item: { id: 5 } as any,
+          notes: [],
+        };
+      },
+    });
+    openedManagers.push(manager);
+    manager.selectAll();
+
+    const result = await manager.handleBatchImport(panel.anchor);
+
+    expect(calls).toEqual([
+      "prepare arxiv-2609.00011-2026-09-24 arxiv-2609.00012-2026-09-24 true false",
+      "import arxiv-2609.00011-2026-09-24",
+      "import arxiv-2609.00012-2026-09-24",
+    ]);
+    expect(result!.added.map((p) => p.entries.length)).toEqual([2, 1]);
   });
 });
 
@@ -1285,6 +1851,50 @@ describe("References panel batch toolbar and selection", () => {
     expect(importButton(third).disabled).toBe(false);
   });
 
+  it("ends the INSPIRE request of a paper under way on Escape and saves nothing for it", async () => {
+    const panel = setUpPanel([entry("a"), entry("b")]);
+    const { controller } = panel;
+    controller.promptForSaveTarget = vi.fn().mockResolvedValue(TARGET);
+    controller.showToast = vi.fn();
+    controller.currentItemID = 9;
+    (globalThis as any).Zotero.Items = { get: () => ({ id: 9, libraryID: 1 }) };
+    const requests: (AbortSignal | undefined)[] = [];
+    network.inspireFetch.mockImplementation(
+      (_url: string, options?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          requests.push(options?.signal);
+          options?.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+          );
+        }),
+    );
+    controller.batchImport.selectAll();
+
+    const run = controller.batchImport.handleBatchImport(panel.toolbar);
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    panel.dom.window.dispatchEvent(
+      new panel.dom.window.KeyboardEvent("keydown", { key: "Escape" }),
+    );
+    const result = await run;
+
+    expect(requests.every((signal) => signal?.aborted)).toBe(true);
+    expect(result.notAdded.map((p: any) => p.outcome.status)).toEqual([
+      "cancelled",
+      "cancelled",
+    ]);
+    // Not taken for a record INSPIRE lacks
+    expect(controller.showToast).not.toHaveBeenCalledWith(
+      msg("references-panel-toast-missing"),
+    );
+    expect(controller.showToast).toHaveBeenLastCalledWith(
+      msg("references-panel-batch-import-cancelled", { done: 0, total: 2 }),
+    );
+    expect(controller.allEntries.map((e: any) => e.localItemID)).toEqual([
+      undefined,
+      undefined,
+    ]);
+  });
+
   it("imports the ticked rows into the save target picked at the Import button", async () => {
     const panel = setUpPanel([entry("a"), entry("b")]);
     const { controller } = panel;
@@ -1307,7 +1917,11 @@ describe("References panel batch toolbar and selection", () => {
     expect(controller.promptForSaveTarget.mock.calls[0][0]).toBe(
       buttonIn(panel.toolbar, "references-panel-batch-import"),
     );
-    expect(controller.importReference).toHaveBeenCalledWith("rec-a", TARGET);
+    expect(controller.importReference).toHaveBeenCalledWith(
+      "rec-a",
+      TARGET,
+      expect.anything(),
+    );
     expect(controller.allEntries[0].localItemID).toBe(50);
     // The imported row now shows the entry as in the library
     expect(marker("a").dataset.state).toBe("local");
@@ -1347,7 +1961,7 @@ describe("References panel batch toolbar and selection", () => {
   });
 
   it("cancels the import when the panel is closed with the duplicate dialog open", async () => {
-    const panel = setUpPanel([entry("a", { localItemID: 1 }), entry("b")]);
+    const panel = setUpPanel([localEntry("a", 1), entry("b")]);
     const { controller } = panel;
     allowDestroy(controller);
     controller.promptForSaveTarget = vi.fn();

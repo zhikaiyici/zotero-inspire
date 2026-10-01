@@ -37,7 +37,6 @@ const ENTRIES: InspireReferenceEntry[] = [
     citationCount: 200,
     citationCountWithoutSelf: 150,
     localItemID: 3,
-    isRelated: true,
   }),
   entry("reviewByJournal", {
     documentType: ["article"],
@@ -50,6 +49,7 @@ const ENTRIES: InspireReferenceEntry[] = [
     publicationInfo: { journal_title: "Phys. Lett. B" },
     arxivDetails: { id: "2602.00002", categories: ["hep-ph"] },
     year: "2026",
+    totalAuthors: 3,
     citationCount: 120,
     citationCountWithoutSelf: 30,
   }),
@@ -68,7 +68,6 @@ const ENTRIES: InspireReferenceEntry[] = [
     citationCount: 51,
     citationCountWithoutSelf: 51,
     localItemID: 0,
-    isRelated: true,
   }),
 ];
 
@@ -80,9 +79,13 @@ const EXPECTED: Record<QuickFilterType, string[]> = {
   nonReviewOnly: ["article", "preprint", "bare", "oldPublished"],
   publishedOnly: ["reviewByType", "reviewByJournal", "article", "oldPublished"],
   preprintOnly: ["preprint"],
-  relatedOnly: ["reviewByType", "oldPublished"],
+  // The item shown is related to the item of reviewByType (item 3); the
+  // paper oldPublished has no item, so it cannot be related to any
+  relatedOnly: ["reviewByType"],
   localItems: ["reviewByType", "preprint"],
   onlineItems: ["reviewByJournal", "article", "bare", "oldPublished"],
+  // Not in the popup (the panel has its own button), but applied when on
+  smallAuthorGroup: ["article"],
 };
 
 function visibleIDs(
@@ -93,6 +96,7 @@ function visibleIDs(
     InspireReferencePanelController.prototype,
   ) as any;
   Object.assign(controller, {
+    currentItemID: 1,
     filterText: "",
     chartSelectedBins: new Set<string>(),
     authorFilterEnabled: false,
@@ -110,10 +114,18 @@ describe("References panel quick filters", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 5, 15));
+    // The item shown (1) is related to item 3
+    const items: Record<number, object> = {
+      1: { id: 1, key: "KEY1", libraryID: 1, relatedItems: ["KEY3"] },
+      3: { id: 3, key: "KEY3", libraryID: 1, relatedItems: ["KEY1"] },
+      9: { id: 9, key: "KEY9", libraryID: 1, relatedItems: [] },
+    };
+    vi.stubGlobal("Zotero", { Items: { get: (id: number) => items[id] } });
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("covers every quick filter offered in the popup", () => {

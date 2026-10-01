@@ -7,31 +7,19 @@ import {
 import type { InspireArxivDetails } from "./types";
 import { formatArxivDetails } from "./formatters";
 import { LRUCache } from "./utils";
+import {
+  recidFromInspireLink,
+  recidFromLinkText,
+  resolveItemRecid,
+} from "./library/itemRecid";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INSPIRE recid extraction functions
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** The INSPIRE recid of a Zotero item (resolveItemRecid), or null */
 export function deriveRecidFromItem(item: Zotero.Item): string | null {
-  const archiveLocation = (
-    item.getField("archiveLocation") as string | undefined
-  )?.trim();
-  if (archiveLocation && /^\d+$/.test(archiveLocation)) {
-    return archiveLocation;
-  }
-  const url = item.getField("url") as string | undefined;
-  const recidFromUrl = extractRecidFromUrl(url);
-  if (recidFromUrl) {
-    return recidFromUrl;
-  }
-  const extra = item.getField("extra") as string | undefined;
-  if (extra) {
-    const match = extra.match(/inspirehep\.net\/(?:record|literature)\/(\d+)/i);
-    if (match) {
-      return match[1];
-    }
-  }
-  return null;
+  return resolveItemRecid(item);
 }
 
 export function extractRecidFromRecordRef(ref?: string): string | null {
@@ -41,7 +29,7 @@ export function extractRecidFromRecordRef(ref?: string): string | null {
   // A $ref is INSPIRE's own link to the cited record, so a relative one is
   // resolved against INSPIRE. It can point to another collection (e.g. data),
   // whose numbers are not literature recids.
-  return recidFromInspireLiteratureLink(ref.trim(), "https://inspirehep.net/");
+  return recidFromInspireLink(ref.trim(), "https://inspirehep.net/");
 }
 
 export function extractRecidFromUrls(
@@ -59,58 +47,23 @@ export function extractRecidFromUrls(
   return null;
 }
 
-const INSPIRE_HOSTS = new Set(["inspirehep.net", "www.inspirehep.net"]);
-
-/** /literature/<recid>, /api/literature/<recid> or legacy /record/<recid> */
-const INSPIRE_LITERATURE_PATH_REGEX =
-  /^\/(?:(?:api\/)?literature|record)\/(\d+)(?:\/|$)/;
-
-/**
- * Recid from a link to an INSPIRE literature record; the host must be
- * inspirehep.net (optionally www.). Record URLs of other repositories
- * (cds.cern.ch/record/<n>, ...) and other INSPIRE collections number their own
- * records. A link with whitespace or a backslash is rejected: the URL parser
- * would drop or rewrite those characters, changing where the digits end.
- */
-function recidFromInspireLiteratureLink(
-  link: string,
-  base?: string,
-): string | null {
-  if (!link || /[\s\\]/.test(link)) {
-    return null;
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(link, base);
-  } catch {
-    return null;
-  }
-  if (!INSPIRE_HOSTS.has(parsed.hostname)) {
-    return null;
-  }
-  const match = parsed.pathname.match(INSPIRE_LITERATURE_PATH_REGEX);
-  return match ? match[1] : null;
-}
-
 /**
  * Recid from a single INSPIRE literature link. A link without a host (a
  * relative path, or a host name without a scheme) cannot be attributed to
  * INSPIRE and gives none.
  */
 export function extractRecidFromUrl(url?: string | null): string | null {
-  if (typeof url !== "string") {
-    return null;
-  }
-  const link = url.trim();
-  // A scheme-relative link ("//host/path") still names its host
-  return recidFromInspireLiteratureLink(
-    link.startsWith("//") ? `https:${link}` : link,
-  );
+  return recidFromLinkText(url);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // URL Building Functions
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** The INSPIRE page of the literature record `recid` ("Copy INSPIRE link") */
+export function inspireLiteratureUrl(recid: string): string {
+  return `${INSPIRE_LITERATURE_URL}/${recid}`;
+}
 
 export function buildReferenceUrl(
   reference: any,
@@ -233,103 +186,6 @@ export function extractArxivFromMetadata(
   return undefined;
 }
 
-/**
- * Groups: 1 the ID; 2-4 new style YY, MM, sequence number; 5-7 old style YY,
- * MM, sequence number
- */
-const ARXIV_ID_REGEX =
-  /^((\d\d)(\d\d)\.(\d{4,5})|(?:[a-z]+(?:-[a-z]+)*|(?:math|cs|nlin|q-bio)\.[a-z]{2})\/(\d\d)(\d\d)(\d{3}))(?:v[1-9]\d*)?$/i;
-
-/**
- * The arXiv ID in `value` without its version, if `value` has the form of an
- * arXiv identifier: new style YYMM.NNNN (0704 to 1412) or YYMM.NNNNN (from
- * 1501); old style archive/YYMMNNN (9107 to 0703), where math, cs, nlin and
- * q-bio may add a two-letter subject class (math.GT/0309136). The sequence
- * number starts at 1.
- */
-function arxivIdWithoutVersion(value: string): string | undefined {
-  const match = value.match(ARXIV_ID_REGEX);
-  if (!match) {
-    return undefined;
-  }
-  const newStyle = match[2] !== undefined;
-  const [yy, mm, seq] = newStyle ? match.slice(2, 5) : match.slice(5, 8);
-  const month = Number(mm);
-  // Old-style years 91-99 are 1991-1999, all other years 20YY
-  const century = !newStyle && Number(yy) >= 91 ? 1900 : 2000;
-  const yymm = (century + Number(yy)) * 100 + month;
-  const valid =
-    month >= 1 &&
-    month <= 12 &&
-    Number(seq) > 0 &&
-    (newStyle
-      ? yymm >= 200704 && seq.length === (yymm >= 201501 ? 5 : 4)
-      : yymm >= 199107 && yymm <= 200703);
-  return valid ? match[1] : undefined;
-}
-
-/**
- * Extract arXiv ID from item (Extra field, URL, or Archive Location).
- * Archive Location counts only when marked as arXiv ("arXiv:" prefix or
- * Archive "arXiv"): this plugin stores the INSPIRE recid there.
- */
-export function extractArxivIdFromItem(item: Zotero.Item): string | undefined {
-  // Try Extra field
-  const extra = item.getField("extra") as string;
-  if (extra) {
-    const match = extra.match(/arXiv:\s*([0-9.]+|[a-z-]+\/[0-9]+)/i);
-    if (match) return match[1];
-  }
-
-  // Try URL field
-  const url = item.getField("url") as string;
-  if (url) {
-    const match = url.match(/arxiv\.org\/abs\/([0-9.]+|[a-z-]+\/[0-9]+)/i);
-    if (match) return match[1];
-  }
-
-  // Try Archive Location (sometimes used for arXiv ID)
-  const archiveLoc = (
-    (item.getField("archiveLocation") as string) || ""
-  ).trim();
-  if (archiveLoc) {
-    const candidate = archiveLoc.replace(/^arXiv:\s*/i, "");
-    const archive = ((item.getField("archive") as string) || "").trim();
-    if (candidate !== archiveLoc || /^arXiv$/i.test(archive)) {
-      const id = arxivIdWithoutVersion(candidate);
-      if (id) return id;
-    }
-  }
-
-  return undefined;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Database Query Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-export async function findItemByRecid(
-  recid: string,
-): Promise<Zotero.Item | null> {
-  const fieldID = Zotero.ItemFields.getID("archiveLocation");
-  if (!fieldID) {
-    return null;
-  }
-  const sql = `
-    SELECT itemID
-    FROM itemData
-      JOIN itemDataValues USING(valueID)
-    WHERE fieldID = ?
-      AND value = ?
-    LIMIT 1
-  `;
-  const itemID = await Zotero.DB.valueQueryAsync(sql, [fieldID, recid]);
-  if (!itemID) {
-    return null;
-  }
-  return Zotero.Items.get(Number(itemID));
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Clipboard Utility (Zotero-specific implementation)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -381,192 +237,6 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     Zotero.debug(`[${config.addonName}] Failed to copy to clipboard: ${_err}`);
     return false;
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Batch Query Functions for Duplicate Detection (FTR-BATCH-IMPORT)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Find local items by arXiv IDs in batch.
- * Searches the Extra field for patterns like "arXiv:2305.12345" or "_eprint:2305.12345".
- * @param arxivIds Array of arXiv IDs (e.g., ["2305.12345", "hep-ph/0001234"])
- * @returns Map of arXiv ID → local item ID
- */
-export async function findItemsByArxivs(
-  arxivIds: string[],
-): Promise<Map<string, number>> {
-  const result = new Map<string, number>();
-  if (!arxivIds.length) return result;
-
-  const fieldID = Zotero.ItemFields.getID("extra");
-  if (!fieldID) return result;
-
-  const CHUNK_SIZE = 200;
-  for (let i = 0; i < arxivIds.length; i += CHUNK_SIZE) {
-    const chunk = arxivIds.slice(i, i + CHUNK_SIZE);
-    // Build LIKE patterns for arXiv IDs
-    const patterns = chunk.flatMap((id) => [
-      `%arXiv:${id}%`,
-      `%_eprint:${id}%`,
-    ]);
-    const likeConditions = patterns.map(() => "value LIKE ?").join(" OR ");
-    const sql = `
-      SELECT itemID, value
-      FROM itemData
-        JOIN itemDataValues USING(valueID)
-      WHERE fieldID = ? AND (${likeConditions})
-    `;
-    try {
-      const rows = await Zotero.DB.queryAsync(sql, [fieldID, ...patterns]);
-      if (rows) {
-        for (const row of rows) {
-          const extra = row.value as string;
-          // Match arXiv ID from extra field
-          for (const arxivId of chunk) {
-            if (
-              extra.includes(`arXiv:${arxivId}`) ||
-              extra.includes(`_eprint:${arxivId}`)
-            ) {
-              result.set(arxivId, Number(row.itemID));
-              break;
-            }
-          }
-        }
-      }
-    } catch (e) {
-      Zotero.debug(`[${config.addonName}] Error querying items by arXiv: ${e}`);
-    }
-  }
-  return result;
-}
-
-/**
- * Find local items by DOIs in batch.
- * Searches the DOI field directly.
- * @param dois Array of DOIs (e.g., ["10.1103/PhysRevD.100.123456"])
- * @returns Map of DOI → local item ID
- */
-export async function findItemsByDOIs(
-  dois: string[],
-): Promise<Map<string, number>> {
-  const result = new Map<string, number>();
-  if (!dois.length) return result;
-
-  const fieldID = Zotero.ItemFields.getID("DOI");
-  if (!fieldID) return result;
-
-  const CHUNK_SIZE = 500;
-  for (let i = 0; i < dois.length; i += CHUNK_SIZE) {
-    const chunk = dois.slice(i, i + CHUNK_SIZE);
-    // Normalize DOIs for comparison (lowercase)
-    const normalizedChunk = chunk.map((d) => d.toLowerCase());
-    const placeholders = normalizedChunk
-      .map(() => "LOWER(value) = ?")
-      .join(" OR ");
-    const sql = `
-      SELECT itemID, value
-      FROM itemData
-        JOIN itemDataValues USING(valueID)
-      WHERE fieldID = ? AND (${placeholders})
-    `;
-    try {
-      const rows = await Zotero.DB.queryAsync(sql, [
-        fieldID,
-        ...normalizedChunk,
-      ]);
-      if (rows) {
-        for (const row of rows) {
-          const doiValue = (row.value as string).toLowerCase();
-          // Find original DOI (case-insensitive match)
-          const originalDoi = chunk.find((d) => d.toLowerCase() === doiValue);
-          if (originalDoi) {
-            result.set(originalDoi, Number(row.itemID));
-          }
-        }
-      }
-    } catch (e) {
-      Zotero.debug(`[${config.addonName}] Error querying items by DOI: ${e}`);
-    }
-  }
-  return result;
-}
-
-/**
- * Find local items by recids in batch.
- * This is a batch version of findItemByRecid for efficiency.
- * @param recids Array of INSPIRE recids
- * @returns Map of recid → local item ID
- */
-export async function findItemsByRecids(
-  recids: string[],
-): Promise<Map<string, number>> {
-  const result = new Map<string, number>();
-  if (!recids.length) return result;
-
-  // First, try archiveLocation field
-  const archiveFieldID = Zotero.ItemFields.getID("archiveLocation");
-  if (archiveFieldID) {
-    const CHUNK_SIZE = 500;
-    for (let i = 0; i < recids.length; i += CHUNK_SIZE) {
-      const chunk = recids.slice(i, i + CHUNK_SIZE);
-      const placeholders = chunk.map(() => "?").join(",");
-      const sql = `
-        SELECT itemID, value
-        FROM itemData
-          JOIN itemDataValues USING(valueID)
-        WHERE fieldID = ? AND value IN (${placeholders})
-      `;
-      try {
-        const rows = await Zotero.DB.queryAsync(sql, [archiveFieldID, ...chunk]);
-        if (rows) {
-          for (const row of rows) {
-            result.set(row.value as string, Number(row.itemID));
-          }
-        }
-      } catch (e) {
-        Zotero.debug(`[${config.addonName}] Error querying archiveLocation: ${e}`);
-      }
-    }
-  }
-
-  // Then, try URL field for remaining recids
-  const remainingRecids = recids.filter(r => !result.has(r));
-  if (remainingRecids.length > 0) {
-    const urlFieldID = Zotero.ItemFields.getID("url");
-    if (urlFieldID) {
-      // Build URL patterns for INSPIRE
-      const urlPatterns = remainingRecids.map(r => `%inspirehep.net/literature/${r}%`);
-      for (let i = 0; i < urlPatterns.length; i += 100) {
-        const chunk = urlPatterns.slice(i, i + 100);
-        const recidChunk = remainingRecids.slice(i, i + 100);
-        const targetRecids = new Set(recidChunk);
-        const conditions = chunk.map(() => "value LIKE ?").join(" OR ");
-        const sql = `
-          SELECT itemID, value
-          FROM itemData
-            JOIN itemDataValues USING(valueID)
-          WHERE fieldID = ? AND (${conditions})
-        `;
-        try {
-          const rows = await Zotero.DB.queryAsync(sql, [urlFieldID, ...chunk]);
-          if (rows) {
-            for (const row of rows) {
-              const url = row.value as string;
-              const match = url.match(/inspirehep\.net\/literature\/(\d+)/);
-              if (match && targetRecids.has(match[1])) {
-                result.set(match[1], Number(row.itemID));
-              }
-            }
-          }
-        } catch (e) {
-          Zotero.debug(`[${config.addonName}] Error querying URL field: ${e}`);
-        }
-      }
-    }
-  }
-
-  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

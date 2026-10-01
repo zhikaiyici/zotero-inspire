@@ -22,6 +22,7 @@ import {
 } from "../index";
 import {
   HoverPreviewRenderer,
+  type PreviewEntryOptions,
   type PreviewRenderContext,
   type PositionRect,
 } from "./HoverPreviewRenderer";
@@ -63,6 +64,11 @@ export interface PreviewActionCallbacks {
   onHide?: () => void;
   /** Check if entry is favorited */
   isFavorite?: (entry: InspireReferenceEntry) => boolean;
+  /**
+   * Whether the paper's item is related to the item shown (default: it is
+   * not); asked each time the card is drawn
+   */
+  isRelated?: (entry: InspireReferenceEntry) => boolean;
   /** Toggle favorite status */
   onToggleFavorite?: (entry: InspireReferenceEntry) => void | Promise<void>;
 }
@@ -85,6 +91,8 @@ export interface HoverPreviewControllerOptions {
   hideDelay?: number;
   /** Max entries for multi-preview (default: 20) */
   maxEntries?: number;
+  /** Which actions the card offers per paper (default: the References panel's) */
+  entryOptions?: PreviewEntryOptions;
 }
 
 /**
@@ -118,6 +126,7 @@ export class HoverPreviewController {
   private readonly hideDelay: number;
   private readonly maxEntries: number;
   private readonly clickThrough: boolean;
+  private readonly entryOptions?: PreviewEntryOptions;
 
   // Preview card element
   private previewCard?: HTMLDivElement;
@@ -156,6 +165,7 @@ export class HoverPreviewController {
     this.hideDelay = options.hideDelay ?? 100;
     this.maxEntries = options.maxEntries ?? 20;
     this.clickThrough = options.clickThrough === true;
+    this.entryOptions = options.entryOptions;
 
     this.renderer = new HoverPreviewRenderer({
       document: this.doc,
@@ -504,8 +514,8 @@ export class HoverPreviewController {
           return;
         }
         if ((e.ctrlKey || e.metaKey) && e.key === "c") {
-          const mainWindow = Zotero.getMainWindow?.();
-          const selection = mainWindow?.getSelection?.();
+          // The selection of the window the card is in
+          const selection = this.doc.defaultView?.getSelection?.();
           const selectedText = selection?.toString();
           if (selectedText) {
             e.preventDefault();
@@ -536,6 +546,8 @@ export class HoverPreviewController {
       isFavorite: this.callbacks.isFavorite
         ? this.callbacks.isFavorite(entry)
         : undefined,
+      isRelated: this.callbacks.isRelated?.(entry) ?? false,
+      entryOptions: this.entryOptions,
       onAdd: this.callbacks.onAdd
         ? async (e, anchor) => {
             if (this.addActionInFlight) {
@@ -587,8 +599,7 @@ export class HoverPreviewController {
             const savedLatexSource = oldAbstractEl?.dataset.latexSource;
 
             await this.callbacks.onLink!(e);
-            // Update state and refresh card
-            e.isRelated = true;
+            // Refresh card (asks isRelated again)
             this.buildContent(card, e);
 
             // Restore abstract content if unchanged (skip expensive re-render)
@@ -621,8 +632,7 @@ export class HoverPreviewController {
             const savedLatexSource = oldAbstractEl?.dataset.latexSource;
 
             await this.callbacks.onUnlink!(e);
-            // Update state and refresh card
-            e.isRelated = false;
+            // Refresh card (asks isRelated again)
             this.buildContent(card, e);
 
             // Restore abstract content if unchanged (skip expensive re-render)

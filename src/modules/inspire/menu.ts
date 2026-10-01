@@ -7,7 +7,7 @@ export class ZInsMenu {
       tag: "menuseparator",
       isHidden: () =>
         Zotero.getActiveZoteroPane()
-          .getSelectedItems()
+          ?.getSelectedItems()
           .some((item) => {
             return !item.isRegularItem();
           }),
@@ -20,7 +20,7 @@ export class ZInsMenu {
       icon: menuIcon,
       isHidden: () =>
         Zotero.getActiveZoteroPane()
-          .getSelectedItems()
+          ?.getSelectedItems()
           .some((item) => {
             return !item.isRegularItem();
           }),

@@ -1,0 +1,771 @@
+/* The arXiv browser window. Colours come from Zotero's theme variables, so
+   the window follows Zotero's light and dark appearance. */
+
+.arxiv-browser {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  box-sizing: border-box;
+  background: var(--material-background, #fff);
+  color: var(--fill-primary, #1f2937);
+  font-size: 13px;
+}
+
+.arxiv-browser *,
+.arxiv-browser *::before,
+.arxiv-browser *::after {
+  box-sizing: border-box;
+}
+
+.arxiv-browser__main {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  border-top: 1px solid var(--fill-quinary, #e5e7eb);
+}
+
+.arxiv-browser__list-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 60%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.arxiv-browser__divider {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  border-left: 1px solid var(--fill-quinary, #e5e7eb);
+}
+
+.arxiv-browser__divider:hover,
+.arxiv-browser__divider:focus-visible,
+.arxiv-browser__main--dragging .arxiv-browser__divider {
+  background: var(--fill-quinary, #e5e7eb);
+  outline: none;
+}
+
+.arxiv-browser__main--dragging,
+.arxiv-browser__main--dragging * {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Their text can be selected and copied (the window's is not by default) */
+.arxiv-browser__list,
+.arxiv-browser__detail {
+  user-select: text;
+}
+
+.arxiv-browser__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 8px 12px;
+}
+
+.arxiv-browser__detail {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+
+.arxiv-browser__empty {
+  padding: 24px 12px;
+  color: var(--fill-secondary, #6b7280);
+  text-align: center;
+}
+
+/* Toolbar rows above the list */
+
+.arxiv-browser__toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--material-toolbar, #f3f4f6);
+}
+
+.arxiv-browser__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.arxiv-browser__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.arxiv-browser__select {
+  max-width: 260px;
+}
+
+.arxiv-browser__button {
+  padding: 2px 8px;
+}
+
+.arxiv-browser__button--primary {
+  font-weight: 600;
+}
+
+.arxiv-browser__summary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* A click keeps only the chosen categories' papers (as the calendar picks days) */
+.arxiv-browser__chip {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--fill-quinary, #e5e7eb);
+  color: var(--fill-secondary, #4b5563);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.arxiv-browser__chip--chosen {
+  background: var(--accent-blue, #2563eb);
+  color: #fff;
+}
+
+.arxiv-browser__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+/* Subscription editor: a panel over the window's content */
+
+.arxiv-browser__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.arxiv-browser__editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(900px, 94vw);
+  max-height: 92vh;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--material-background, #fff);
+  color: var(--fill-primary, #1f2937);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.arxiv-browser__editor-title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.arxiv-browser__field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.arxiv-browser__field input {
+  flex: 1 1 auto;
+}
+
+.arxiv-browser__editor-columns {
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.arxiv-browser__editor-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 3 1 0;
+  min-width: 0;
+}
+
+.arxiv-browser__editor-tree {
+  height: 46vh;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--fill-quinary, #e5e7eb);
+  border-radius: 4px;
+}
+
+.arxiv-browser__editor-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 2px 0;
+}
+
+.arxiv-browser__editor-group .arxiv-browser__editor-group {
+  margin-left: 14px;
+}
+
+.arxiv-browser__editor-group .arxiv-browser__editor-group > summary {
+  font-weight: normal;
+}
+
+.arxiv-browser__editor-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 14px;
+  padding: 1px 0;
+}
+
+.arxiv-browser__editor-row[hidden],
+.arxiv-browser__editor-group[hidden] {
+  display: none;
+}
+
+.arxiv-browser__editor-side {
+  flex: 2 1 0;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.arxiv-browser__editor-heading {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.arxiv-browser__editor-selected {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.arxiv-browser__editor-chosen {
+  padding: 1px 0;
+}
+
+.arxiv-browser__editor-chosen > span {
+  display: inline-block;
+  min-width: 110px;
+}
+
+.arxiv-browser__editor-chosen > button {
+  margin-left: 2px;
+  padding: 0 5px;
+}
+
+.arxiv-browser__editor-none {
+  list-style: none;
+  color: var(--fill-secondary, #6b7280);
+}
+
+.arxiv-browser__editor-sections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.arxiv-browser__editor-estimate p {
+  margin: 2px 0;
+  color: var(--fill-secondary, #4b5563);
+  font-size: 12px;
+}
+
+.arxiv-browser__editor-estimate .arxiv-browser__editor-warning {
+  color: var(--accent-orange, #b45309);
+}
+
+.arxiv-browser__editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Loading status and list controls */
+
+.arxiv-browser__status {
+  color: var(--fill-secondary, #4b5563);
+  min-width: 0;
+}
+
+.arxiv-browser__status > button {
+  margin: 0 2px;
+}
+
+.arxiv-browser__sections {
+  display: inline-flex;
+  gap: 8px;
+}
+
+/* The References panel's filter box: its size here (over the panel's inline
+   one) */
+.arxiv-browser__filter {
+  flex: 1 1 180px !important;
+  min-width: 120px !important;
+  max-width: 360px !important;
+}
+
+/* The search box (the filter box's kind), and its clear control */
+.arxiv-browser__search {
+  flex: 0 1 260px !important;
+  min-width: 140px !important;
+}
+
+.arxiv-browser__search-clear {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--fill-secondary, #6b7280);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.arxiv-browser__search-clear:hover {
+  color: var(--fill-primary, #111827);
+}
+
+/* The date button and its calendar */
+
+.arxiv-browser__day-choice {
+  position: relative;
+  display: inline-block;
+}
+
+.arxiv-browser__daypicker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 340px;
+  padding: 10px 12px;
+  border: 1px solid var(--fill-quinary, #e5e7eb);
+  border-radius: 8px;
+  background: var(--material-background, #fff);
+  color: var(--fill-primary, #1f2937);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+}
+
+.arxiv-browser__daypicker[hidden] {
+  display: none;
+}
+
+.arxiv-browser__daypicker-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.arxiv-browser__daypicker-note,
+.arxiv-browser__daypicker-summary {
+  color: var(--fill-secondary, #6b7280);
+  font-size: 0.9em;
+}
+
+.arxiv-browser__daypicker-month {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.arxiv-browser__daypicker-title {
+  font-weight: 600;
+}
+
+.arxiv-browser__daypicker-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  text-align: center;
+}
+
+.arxiv-browser__daypicker-weekday {
+  color: var(--fill-secondary, #6b7280);
+  font-size: 0.85em;
+}
+
+.arxiv-browser__daypicker-day,
+.arxiv-browser__daypicker-off {
+  padding: 4px 0;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.arxiv-browser__daypicker-day {
+  border: 1px solid transparent;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.arxiv-browser__daypicker-day:hover {
+  border-color: var(--fill-quaternary, #d1d5db);
+}
+
+.arxiv-browser__daypicker-day--picked {
+  background: var(--accent-blue, #2563eb);
+  color: #fff;
+}
+
+.arxiv-browser__daypicker-off {
+  color: var(--fill-quaternary, #c0c4cc);
+}
+
+/* A day not read yet: a blue dot at the top right of its cell */
+.arxiv-browser__daypicker-day--unread {
+  position: relative;
+}
+
+.arxiv-browser__daypicker-day--unread::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #0a6cff;
+}
+
+.arxiv-browser__daypicker-day--picked.arxiv-browser__daypicker-day--unread::after {
+  background: #fff;
+}
+
+/* The legend on its own line, the two buttons side by side below it */
+.arxiv-browser__daypicker-marks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+}
+
+.arxiv-browser__daypicker-marks .arxiv-browser__daypicker-note {
+  flex: 1 0 100%;
+}
+
+.arxiv-browser__daypicker-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.arxiv-browser__daypicker-summary {
+  flex: 1 1 auto;
+}
+
+/* Day index and pages. The chips wrap onto more lines: a horizontal
+   scrollbar would cover them. */
+
+.arxiv-browser__days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px 2px;
+  flex: 0 0 auto;
+}
+
+/* No chips for a search's months; the order and sections are the days' */
+.arxiv-browser__days[hidden],
+.arxiv-browser__label[hidden],
+.arxiv-browser__sections[hidden] {
+  display: none;
+}
+
+/* Flat pills like the category chips, drawn in full here: a button with its
+   own corners keeps no system drawing and would show a bevelled border. The
+   chip of the page shown is filled as a picked day in the calendar is. */
+.arxiv-browser__day-chip {
+  appearance: none;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 1px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--fill-quinary, #e5e7eb);
+  color: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.arxiv-browser__day-chip:hover {
+  border-color: var(--fill-quaternary, #d1d5db);
+}
+
+.arxiv-browser__day-chip--incomplete {
+  color: var(--accent-orange, #b45309);
+}
+
+.arxiv-browser__day-chip--here {
+  background: var(--accent-blue, #2563eb);
+  color: #fff;
+  font-weight: 600;
+}
+
+.arxiv-browser__pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--fill-quinary, #e5e7eb);
+}
+
+.arxiv-browser__page {
+  min-width: 28px;
+}
+
+.arxiv-browser__page--current {
+  font-weight: 700;
+}
+
+.arxiv-browser__pager-count {
+  margin-left: auto;
+  color: var(--fill-secondary, #6b7280);
+}
+
+/* Headers within a page */
+
+.arxiv-browser__day {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 4px 6px;
+  border-bottom: 2px solid var(--fill-quinary, #d1d5db);
+  font-size: 14px;
+}
+
+.arxiv-browser__day-title {
+  font-weight: 700;
+}
+
+/* The batch import's toolbar, while papers are selected: at the right of the
+   page's first day header */
+.arxiv-browser__day .zinspire-batch-toolbar {
+  margin-left: auto;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.arxiv-browser__day-count,
+.arxiv-browser__continued {
+  color: var(--fill-secondary, #6b7280);
+  font-size: 12px;
+}
+
+.arxiv-browser__day-notes {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  color: var(--accent-orange, #b45309);
+  font-size: 12px;
+}
+
+.arxiv-browser__group {
+  margin: 8px 0 2px;
+  padding: 2px 6px;
+  font-weight: 600;
+  color: var(--fill-secondary, #4b5563);
+}
+
+.arxiv-browser__group .arxiv-browser__continued {
+  margin-left: 6px;
+  font-weight: normal;
+}
+
+/* Rows: the References panel's rows, with its check box, in-library mark and
+   relate button */
+
+/* Author names are not links here (a click does nothing; hovering shows
+   the author card): the row's text colour, not the References panel's link
+   blue, which the renderer sets inline, underlined with dots as in the
+   detail pane */
+.arxiv-browser__row .zinspire-ref-entry__author-link {
+  color: inherit !important;
+  cursor: default !important;
+  border-bottom: 1px dotted var(--fill-tertiary, #9ca3af);
+}
+
+.arxiv-browser__row--collapsed .zinspire-ref-entry__abstract {
+  display: none;
+}
+
+.arxiv-browser__abstract-toggle {
+  margin: 2px 0 0;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.arxiv-browser__next-page {
+  display: block;
+  margin: 12px auto 4px;
+}
+
+/* Notices: short messages at the bottom of the window */
+
+.arxiv-browser__notices {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.arxiv-browser__notice {
+  max-width: 420px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--material-background, #fff);
+  color: var(--fill-primary, #1f2937);
+  border: 1px solid var(--fill-quinary, #d1d5db);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+/* A notice with buttons: they can be clicked */
+.arxiv-browser__notice--ask {
+  pointer-events: auto;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.arxiv-browser__notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* Detail pane of the focused paper */
+
+.arxiv-browser__detail-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.arxiv-browser__detail-authors {
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+.arxiv-browser__author {
+  cursor: default;
+  border-bottom: 1px dotted var(--fill-tertiary, #9ca3af);
+}
+
+.arxiv-browser__detail-line {
+  margin: 4px 0;
+}
+
+.arxiv-browser__detail-quiet {
+  color: var(--fill-secondary, #6b7280);
+  font-size: 12px;
+}
+
+/* The previous version's text while a chosen version is fetched */
+.arxiv-browser__detail-stale {
+  opacity: 0.45;
+}
+
+.arxiv-browser__detail-label {
+  font-weight: 600;
+}
+
+.arxiv-browser__category {
+  white-space: nowrap;
+}
+
+.arxiv-browser__category--primary {
+  font-weight: 600;
+}
+
+/* On the texts' baseline: the in-library note, the buttons and the HTML
+   split button line up */
+.arxiv-browser__detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.arxiv-browser__detail-abstract {
+  margin-top: 8px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+/* The HTML button and its ▾ menu, one split button in the detail pane. The
+   pair is drawn as one system button with the other buttons' padding, like
+   the PDF button next to it: a button given its own border, background or
+   corners loses the system drawing (square and bevelled), so its two parts
+   stay plain, with a thin line between them. */
+.arxiv-browser__split {
+  appearance: auto;
+  -moz-default-appearance: button;
+  display: inline-flex;
+  padding-block: 2px;
+  padding-inline: 8px 3px;
+}
+
+.arxiv-browser__split > .arxiv-browser__button {
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  padding-inline-end: 8px;
+  border: none;
+  background: transparent;
+}
+
+.arxiv-browser__split > .arxiv-browser__split-more {
+  padding: 0;
+  padding-inline-start: 5px;
+  border-inline-start: 1px solid
+    color-mix(in srgb, currentColor 30%, transparent);
+}
+
+/* ... and in a row, after the PDF button */
+.arxiv-browser__html {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.arxiv-browser__html-more {
+  width: 9px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fill-secondary, #6b7280);
+  font-size: 9px;
+  line-height: 14px;
+  cursor: pointer;
+}
