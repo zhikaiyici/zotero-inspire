@@ -98,7 +98,7 @@ Then install `build/*.xpi` as above.
 
 The arXiv browser is a Zotero window for reading arXiv's announcements. It is not limited to high energy physics: every arXiv category can be subscribed to, and papers that INSPIRE does not cover are added to your library from arXiv's own data.
 
-**Open it** with `View` → `arXiv Browser`, or with the arXiv button at the right end of Zotero's tab bar. A second request brings the open window to the front. The window can also open when Zotero starts (see [Preferences](#preferences)).
+**Open it** with `View` → `arXiv Browser`, with the arXiv button at the right end of Zotero's tab bar, or with the arXiv button (a red X on a dark tile) next to the INSPIRE button in the item pane's side navigation, also in the Reader. A second request brings the open window to the front. The window can also open when Zotero starts (see [Preferences](#preferences)).
 
 ### Getting started
 
@@ -131,7 +131,7 @@ The arXiv browser is a Zotero window for reading arXiv's announcements. It is no
 - **Filter box**: words or `"quoted phrases"` matched against authors, title, arXiv ID, categories, comments, journal reference (including shorthand such as `PRL`, `PRD`, `JHEP`) and abstract. Its history is shared with the References panel.
 - **Quick filters (⏳)**: **Local items**, **Online items**, **≤10 Authors**, **Published** (has a journal reference), **arXiv only**.
 - **In-library marks** (by arXiv ID, over all your libraries, trash excluded): ● in your library (click selects it in the main window), ②, ③ … several items, ⊕ not in your library (click adds it), ? the library could not be read (click tries again). The detail pane shows **✓ In your library** with **Show in library**.
-- **PDF button**: green when the paper's item has a PDF, which a click opens in Zotero; otherwise it opens arXiv's PDF in your web browser.
+- **PDF button**: green when the paper's item has a PDF, which a click opens in Zotero. A paper in your library without a PDF shows the blue download icon, as in the References panel: a click runs Zotero's **Find Full Text** on its item, and the button turns green when a PDF is found (in the detail pane the button reads **Find Full Text**; for an older version chosen there, **PDF** opens arXiv's PDF of that version). A paper not in your library: a click opens arXiv's PDF in your web browser.
 - **Author card**: hover an author name. When INSPIRE has the paper, the INSPIRE author card appears; otherwise a local card. Both show the author's papers in your library and a link to the author's arXiv search.
 
 ### Searching arXiv
@@ -172,13 +172,23 @@ A paper already in the target library (by arXiv ID, INSPIRE record or journal DO
 
 ### HTML version and snapshots
 
-The **HTML** button in the detail pane and the `</>` button on each row (hidden when the listing says arXiv has no HTML version of the paper) open the saved snapshot in Zotero if there is one, and otherwise arXiv's HTML version in your web browser. Their ▾ menu offers **Open in the Web Browser**, **Save HTML Snapshot to the Library** and **Open Snapshot in Zotero**.
+The **HTML** button in the detail pane and the `</>` button on each row (hidden when the listing says arXiv has no HTML version of the paper) open the saved snapshot in Zotero if there is one, and otherwise show arXiv's HTML version in the window, in the detail pane's place. Their ▾ menu offers **Show in This Window**, **Open in the Web Browser**, **Save HTML Snapshot to the Library** and **Open Snapshot in Zotero**.
+
+In the window, the page has the detail pane's width (drag the divider or enlarge the window for more room). **‹ Details** above it, or focusing another paper in the list, returns to the details; **Open in the Web Browser** opens the same page there.
+
+- Links within the page (sections, citations, footnotes) move within it; links to elsewhere (abstract page, PDF, DOIs) open in your web browser. The buttons of arXiv's page header work, including the table of contents and the reading mode.
+- Resting the pointer on a link to an equation, a figure, a table, a reference or a section shows it in a small box beside the link: the equation with its number, the figure or table with its caption, the reference with its links, a section, subsection or appendix as its heading and its first lines (cut off at the box's height). The box stays while the pointer is in it (its links work) and closes when the pointer leaves it, on a click elsewhere, on scrolling the page and with `Escape` in the page.
+- Selecting text that contains citations (such as "[12, 13]") shows below the selection, as the INSPIRE look-up in Zotero's PDF reader does, a small bar with their numbers. Resting the pointer on a number shows the INSPIRE card of that reference: authors, journal, citations, abstract, whether it is in your library, **Add to Library**, **Copy BibTeX** and more. A reference INSPIRE's list of the paper does not have, and every reference of a paper INSPIRE has no record of, shows arXiv's entry text instead. The paper's references are fetched from INSPIRE once, at the first such selection, and kept in the plugin's cache (the References panel's).
+- `Ctrl/Cmd+F` finds in the page: `Ctrl/Cmd+G` and `Ctrl/Cmd+Shift+G` go to the next and previous match, `Escape` closes the find bar. The find bar is the Firefox platform's and is in English; `ss` and `ß` do not match each other.
+- Keys pressed in the page belong to the page (`Space`, arrows, `Ctrl/Cmd+C`, `Ctrl/Cmd+A`). Right-click copies the selection and, on a link, opens it or copies its address.
 
 Saving uses Zotero's own web snapshot of the listed version, titled "arXiv HTML vN", attached to the paper's item (the paper is added first if needed). The snapshot is a copy of arXiv's full-text HTML page, formulas and figures included; read and annotate it in Zotero's reader. Like other attachments it syncs, so it can also be read in Zotero's mobile apps.
 
+In the INSPIRE References panel, **HTML** after a paper's arXiv number opens a menu: **Show in the arXiv Browser** opens the window (or brings it to the front) with arXiv's HTML version of the paper on its right-hand side, the list unchanged; **Save HTML Snapshot to the Library** saves the newest version to the paper's item (a paper not in your library is added first, where you choose); once a snapshot is saved, the button is green with a ✓ and the menu also offers **Open Snapshot in Zotero**.
+
 ### Requests to arXiv
 
-Requests to arXiv are spaced as arXiv asks (15 s for its web pages, 3 s for its API); the status line counts down to the next one. Listings are cached for 100 days, so reopening the window costs no requests until the next announcement; **Reload** fetches the newest listing again.
+Requests to arXiv are spaced as arXiv asks (15 s for its web pages, 3 s for its API); the status line counts down to the next one. Listings are cached for 100 days, so reopening the window costs no requests until the next announcement; **Reload** fetches the newest listing again. An HTML page shown in the window is loaded when you click, as a web browser would load it.
 
 ---
 
@@ -293,22 +303,23 @@ Enable them via the column picker in the items list header. Preferences:
 
 ### Interactions
 
-| Action               | Result                                               |
-| -------------------- | ---------------------------------------------------- |
-| Click ●              | Jump to local item                                   |
-| Double-click ●       | Open PDF directly                                    |
-| Click ⊕              | Open import dialog                                   |
-| Click 🔗             | Toggle related item link (Edit → Undo takes it back) |
-| Click 📄 (green)     | Open PDF attachment                                  |
-| Click ⬇️ (blue)      | Trigger Find Full Text                               |
-| Click title          | Open in INSPIRE                                      |
-| Hover title          | Show abstract                                        |
-| Click author         | View author's papers                                 |
-| Hover author         | Show author profile                                  |
-| Click citation count | View citing papers                                   |
-| Click 📋             | Copy BibTeX                                          |
-| Click T              | Copy citation key                                    |
-| Right-click entry    | Context menu (Favorites)                             |
+| Action               | Result                                                      |
+| -------------------- | ----------------------------------------------------------- |
+| Click ●              | Jump to local item                                          |
+| Double-click ●       | Open PDF directly                                           |
+| Click ⊕              | Open import dialog                                          |
+| Click 🔗             | Toggle related item link (Edit → Undo takes it back)        |
+| Click 📄 (green)     | Open PDF attachment                                         |
+| Click ⬇️ (blue)      | Trigger Find Full Text                                      |
+| Click HTML           | Menu of arXiv's [HTML version](#html-version-and-snapshots) |
+| Click title          | Open in INSPIRE                                             |
+| Hover title          | Show abstract                                               |
+| Click author         | View author's papers                                        |
+| Hover author         | Show author profile                                         |
+| Click citation count | View citing papers                                          |
+| Click 📋             | Copy BibTeX                                                 |
+| Click T              | Copy citation key                                           |
+| Right-click entry    | Context menu (Favorites)                                    |
 
 ### Filtering & Sorting
 
@@ -392,7 +403,9 @@ Keys act on the focused paper and are ignored while you type in a text box.
 | `a`                              | Add to the library (save-target picker)                  |
 | `l`                              | Relate to items (Select Items dialog)                    |
 | `x`                              | Tick or untick for batch import                          |
-| `Escape`                         | Clear the focus; close the calendar                      |
+| `Escape`                         | Clear the focus; close the calendar or the find bar      |
+| `Ctrl/Cmd+F`                     | Find in the HTML page shown in the window                |
+| `Ctrl/Cmd+G`, `Ctrl/Cmd+Shift+G` | Next / previous match in the HTML page                   |
 | `Ctrl/Cmd+Shift+C`               | Copy BibTeX                                              |
 | `Ctrl/Cmd+C`                     | Copy the selected text (each formula once)               |
 | `Ctrl/Cmd+A`                     | Select the text of the list or the detail pane           |

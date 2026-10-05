@@ -138,7 +138,7 @@ describe("References panel row", () => {
       "https://inspirehep.net/literature/2001",
     );
     expect(part(row, "meta").textContent).toMatch(
-      /^Rev\. Mod\. Phys\.\s+90 \(2018\) \[arXiv:1705\.00141\]$/,
+      /^Rev\. Mod\. Phys\.\s+90 \(2018\) \[arXiv:1705\.00141\] zoteroinspire-arxiv-browser-open-html-button$/,
     );
     expect(part(row, "stats-button").textContent).toBe(
       `${msg("references-panel-citation-count")} {"count":1500}`,
@@ -240,6 +240,60 @@ describe("References panel row", () => {
   });
 });
 
+describe("a title with sub- and superscripts that have no Unicode form", () => {
+  // cleanMathTitle writes them as <sub>…</sub> and <sup>…</sup>
+  const title =
+    "Decays of the B<sub>c</sub><sup>*</sup> and the Z<sub>c</sub>(3900)";
+
+  it("shows them as elements, not as tags", () => {
+    const renderer = new EntryListRenderer({ document: main.document });
+    const link = part(
+      renderer.createRow(paper({ title }), context()),
+      "title-link",
+    );
+
+    expect(link.innerHTML).toBe(`${title};`);
+    expect(link.textContent).toBe("Decays of the Bc* and the Zc(3900);");
+    expect([...link.children].map((el) => el.localName)).toEqual([
+      "sub",
+      "sup",
+      "sub",
+    ]);
+  });
+
+  it("keeps none of them when the row is redrawn for another paper", () => {
+    const renderer = new EntryListRenderer({ document: main.document });
+    const list = main.document.createElement("div");
+    const first = renderer.createRow(paper({ title }), context());
+    list.appendChild(first);
+    renderer.recycleRowsFromContainer(list);
+    renderer.clearCache();
+    const next = renderer.createRow(
+      paper({ id: "0-7", recid: "7", title: "Another paper" }),
+      context(),
+    );
+
+    expect(next === first).toBe(true);
+    expect(part(next, "title-link").innerHTML).toBe("Another paper;");
+  });
+
+  it("shows any other markup of a title as text", () => {
+    const renderer = new EntryListRenderer({ document: main.document });
+    const markup =
+      'x<sub>c</sub> <img src="x" onerror="alert(1)"> <b>b</b> a<b';
+    const link = part(
+      renderer.createRow(paper({ title: markup }), context()),
+      "title-link",
+    );
+
+    expect(link.textContent).toBe(
+      'xc <img src="x" onerror="alert(1)"> <b>b</b> a<b;',
+    );
+    expect([...link.children].map((el) => el.localName)).toEqual(["sub"]);
+    expect(link.querySelector("img, b")).toBeNull();
+  });
+});
+
 describe("rows of a list with its own choices", () => {
   /** Choices a list of arXiv papers would make. */
   const arxivList: EntryRowAdapter = {
@@ -306,13 +360,93 @@ describe("rows of a list with its own choices", () => {
     expect(part(row, "pdf").dataset.url).toBeUndefined();
   });
 
+  it("follows the arXiv number with HTML, for the menu of the HTML version", () => {
+    const renderer = new EntryListRenderer({ document: main.document });
+    const row = renderer.createRow(paper(), context());
+    const html = row.querySelector(
+      ".zinspire-ref-entry__meta .zinspire-ref-entry__html",
+    ) as HTMLAnchorElement;
+    expect(html.textContent).toBe(msg("arxiv-browser-open-html-button"));
+    expect(html.title).toBe(msg("references-panel-arxiv-html"));
+    // Right after the arXiv link; no address, so no link menu
+    expect(html.previousSibling?.textContent).toBe(" ");
+    expect(html.previousSibling?.previousSibling?.textContent).toBe(
+      "[arXiv:1705.00141]",
+    );
+    expect(html.hasAttribute("href")).toBe(false);
+    // A click is left to the list's own handler
+    const click = new main.MouseEvent("click", { bubbles: true });
+    html.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(false);
+    expect(Zotero.launchURL).not.toHaveBeenCalled();
+
+    // None for a paper without an arXiv number, also in a reused row
+    renderer.updateRow(row, paper({ arxivDetails: undefined }), context());
+    expect(row.querySelector(".zinspire-ref-entry__html")).toBeNull();
+    renderer.updateMeta(row, paper());
+    expect(row.querySelector(".zinspire-ref-entry__html")).not.toBeNull();
+
+    // None in a list whose rows have their own HTML button
+    const list = new EntryListRenderer({
+      document: main.document,
+      adapter: { arxivHtml: false },
+    });
+    expect(
+      list
+        .createRow(paper(), context())
+        .querySelector(".zinspire-ref-entry__html"),
+    ).toBeNull();
+  });
+
+  it("draws HTML green with a check once the snapshot is saved", () => {
+    const saved = new Set<string>();
+    const asked: Array<[string, string]> = [];
+    const renderer = new EntryListRenderer({
+      document: main.document,
+      adapter: {
+        arxivHtmlSaved: (entry, id) => {
+          asked.push([entry.id, id]);
+          return saved.has(id);
+        },
+      },
+    });
+    const html = (row: HTMLElement) =>
+      row.querySelector(".zinspire-ref-entry__html") as HTMLAnchorElement;
+    const row = renderer.createRow(paper(), context());
+    expect(asked).toEqual([["3-2001", "1705.00141"]]);
+    expect(html(row).dataset.state).toBe("online");
+    expect(html(row).title).toBe(msg("references-panel-arxiv-html"));
+    const linkColor = html(row).style.color;
+
+    saved.add("1705.00141");
+    renderer.updateMeta(row, paper());
+    expect(html(row).dataset.state).toBe("saved");
+    expect(html(row).style.color).toBe(css(main, "#1a8f4d"));
+    expect(html(row).style.color).not.toBe(linkColor);
+    expect(html(row).title).toBe(msg("references-panel-arxiv-html-saved"));
+    // The check is drawn: the text stays the label
+    expect(html(row).textContent).toBe(msg("arxiv-browser-open-html-button"));
+    const check = html(row).firstElementChild as HTMLElement;
+    expect(check.style.transform).toBe("rotate(45deg)");
+    expect(check.style.maskImage ?? "").toBe("");
+
+    // Dark theme: the PDF button's green of the dark theme
+    setTheme(main, "dark");
+    renderer.updateMeta(row, paper());
+    expect(html(row).style.color).toBe(css(main, "#22c55e"));
+  });
+
   it("writes the list's text after the paper's links", () => {
     const suffixes: Record<string, string> = {
       "2609.28544@2026-09-28": " · hep-ph · Cross-list",
     };
     const renderer = new EntryListRenderer({
       document: main.document,
-      adapter: { titleSuffix: "", metaSuffix: (entry) => suffixes[entry.id] },
+      adapter: {
+        titleSuffix: "",
+        metaSuffix: (entry) => suffixes[entry.id],
+        arxivHtml: false,
+      },
     });
     const row = renderer.createRow(newPaper(), context());
     expect(part(row, "meta").textContent).toBe(

@@ -19,8 +19,10 @@ import { getPref } from "../../../utils/prefs";
 import { renderMathContent } from "../../inspire/mathRenderer";
 import {
   EntryListRenderer,
+  panelPdfButton,
   type EntryRenderContext,
 } from "../../inspire/panel/EntryListRenderer";
+import { showFullTextSearch } from "../../inspire/library/localPdf";
 import { isDarkMode } from "../../inspire/styles";
 import {
   applyPdfButtonStyle,
@@ -109,6 +111,11 @@ export interface ListPaneOptions {
   /** Open the paper's PDF (default: arXiv's, in the web browser) */
   openPdf?(entry: BrowserEntry): void;
   /**
+   * Find the PDF of a paper in the library without one (its download icon);
+   * resolves to the ID of the PDF found, or null
+   */
+  findPdf?(entry: BrowserEntry): Promise<number | null>;
+  /**
    * The paper's HTML version: open it (default: arXiv's, in the web
    * browser), and its menu (none: no menu)
    */
@@ -181,11 +188,12 @@ export class ListPane {
       adapter: {
         canCopyBibtex: () => true,
         canCopyTexkey: () => false,
-        // Green as in the References panel only for a PDF in the library;
-        // otherwise arXiv's PDF, opened in the web browser
+        // A paper in the library as in the References panel: green for its
+        // PDF, else the download icon (Find Full Text); a paper not in the
+        // library: arXiv's PDF, opened in the web browser
         pdfButton: (entry, hasPdf) =>
-          hasPdf
-            ? { state: PdfButtonState.HAS_PDF }
+          entry.localItemID
+            ? panelPdfButton(entry, hasPdf)
             : {
                 state: PdfButtonState.ONLINE,
                 title: getString("arxiv-browser-open-pdf"),
@@ -194,6 +202,8 @@ export class ListPane {
         titleSuffix: "",
         abstract: (entry) => entry.abstract || undefined,
         metaSuffix: (entry) => this.metaSuffix(entry as BrowserEntry),
+        // The row has its HTML button
+        arxivHtml: false,
       },
     });
 
@@ -293,7 +303,9 @@ export class ListPane {
 
   /**
    * Show the arranged list where the reader was (`position`, kept before):
-   * back from the search results to the days
+   * back from the search results to the days, Back and Forward. The focused
+   * paper, when listed, on its page and in view (the list may be arranged
+   * otherwise now: a filter, days added); else the page and scroll kept.
    */
   restore(
     arranged: ArrangedList,
@@ -303,14 +315,16 @@ export class ListPane {
     this.message = null;
     this.arranged = arranged;
     this.sort = sort;
-    this.page = Math.min(position.page, this.pages - 1);
-    this.setFocus(null, false);
-    this.render("top");
-    this.list.scrollTop = position.scrollTop;
     const focused = position.focused;
-    if (focused && arranged.entries.some((entry) => entry.id === focused)) {
-      this.setFocus(focused, false);
+    const page = focused ? pageOfEntry(arranged, focused, this.pageSize) : -1;
+    this.page = page >= 0 ? page : Math.min(position.page, this.pages - 1);
+    // The paper focused already stays so (its details stay as they are)
+    if (page < 0 || focused !== this.focusedKey) this.setFocus(null, false);
+    this.render("top");
+    if (page < 0 || page === position.page) {
+      this.list.scrollTop = position.scrollTop;
     }
+    if (focused && page >= 0) this.setFocus(focused, true);
   }
 
   /** Whether more search results can be fetched after the last page */
@@ -437,6 +451,17 @@ export class ListPane {
 
   clearFocus(): void {
     this.setFocus(null, false);
+  }
+
+  /** Focus the paper of row `key`, on its page, in view */
+  focusEntry(key: string): void {
+    const page = pageOfEntry(this.arranged, key, this.pageSize);
+    if (page < 0) return;
+    if (page !== this.page) {
+      this.page = page;
+      this.render("top");
+    }
+    this.setFocus(key, true);
   }
 
   /** Show or hide the focused paper's abstract */
@@ -1129,7 +1154,24 @@ export class ListPane {
       void actions.copyBibtex(entry.listing);
     } else if (target.closest(".zinspire-ref-entry__pdf")) {
       event.preventDefault();
-      if (this.options.openPdf) this.options.openPdf(entry);
+      const pdf = target.closest<HTMLButtonElement>(
+        ".zinspire-ref-entry__pdf",
+      )!;
+      if (
+        pdf.dataset.state === PdfButtonState.FIND_PDF &&
+        this.options.findPdf
+      ) {
+        // The row may be drawn again meanwhile (another page)
+        void showFullTextSearch(
+          pdf,
+          this.options.findPdf(entry),
+          () => pdf.isConnected,
+          {
+            pdfOpen: getString("references-panel-pdf-open"),
+            pdfFind: getString("references-panel-pdf-find"),
+          },
+        );
+      } else if (this.options.openPdf) this.options.openPdf(entry);
       else actions.openPdf(id);
     } else if (target.closest(".arxiv-browser__html-button")) {
       if (this.options.html) this.options.html.open(entry);

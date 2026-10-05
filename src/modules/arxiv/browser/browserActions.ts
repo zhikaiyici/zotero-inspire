@@ -287,13 +287,14 @@ export class BrowserActions {
   }
 
   /**
-   * Version `version` of paper `id` as the arXiv API gives it: one request,
-   * shared by all who ask meanwhile and kept for the window; nothing when
-   * it failed (the user was told why, and a later choice asks again)
+   * Version `version` of paper `id` (without `version`: its newest) as the
+   * arXiv API gives it: one request, shared by all who ask meanwhile and
+   * kept for the window; nothing when it failed (the user was told why, and
+   * a later choice asks again)
    */
   paperVersion(
     id: string,
-    version: number,
+    version?: number,
   ): Promise<ArxivApiEntry | undefined> {
     const key = versioned(id, version);
     let asking = this.versions.get(key);
@@ -307,10 +308,15 @@ export class BrowserActions {
           `[${config.addonName}] arXiv ${key}: ${answer.reason} ${answer.message}`,
         );
         if (answer.reason !== "cancelled" && !this.disposed) {
+          const reason = reasonText(answer.reason);
           this.reporter.notify(
-            getString("arxiv-browser-version-failed", {
-              args: { id, version, reason: reasonText(answer.reason) },
-            }),
+            version === undefined
+              ? getString("arxiv-browser-paper-failed", {
+                  args: { id, reason },
+                })
+              : getString("arxiv-browser-version-failed", {
+                  args: { id, version, reason },
+                }),
           );
         }
         return undefined;
@@ -446,19 +452,28 @@ export class BrowserActions {
     }
   }
 
-  /** The recid of the paper's INSPIRE record, or nothing (the user was told) */
-  private async recidOf(id: string): Promise<string | undefined> {
+  /**
+   * The recid of the paper's INSPIRE record: from its library items, from
+   * memory, else from one search; null when INSPIRE has no record, nothing
+   * when it cannot be reached
+   */
+  async paperRecid(id: string): Promise<string | null | undefined> {
     const known =
       fromLibrary(await this.libraryItems(id), resolveItemRecid) ??
       this.inspire.get(id)?.recid;
     if (known) return known;
     const record = await this.recordOf(id);
-    if (record?.recid) return record.recid;
-    const status = record === null ? "notFound" : "failed";
+    return record === null ? null : record?.recid;
+  }
+
+  /** The recid of the paper's INSPIRE record, or nothing (the user was told) */
+  private async recidOf(id: string): Promise<string | undefined> {
+    const recid = await this.paperRecid(id);
+    if (recid) return recid;
     if (!this.disposed) {
       this.reporter.notify(
         getString(
-          status === "notFound"
+          recid === null
             ? "arxiv-browser-inspire-link-not-found"
             : "arxiv-browser-inspire-link-unreachable",
           { args: { id } },

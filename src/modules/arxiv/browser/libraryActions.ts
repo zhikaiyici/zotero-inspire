@@ -10,12 +10,20 @@
 // or why not. When INSPIRE cannot be reached the user chooses: add from
 // arXiv data now, or try later. Adding is not undoable; a relation is (one
 // step of Zotero's Edit → Undo, linkItems). Relating a paper, or saving its
-// HTML version, adds a paper not in the library first.
+// HTML version, adds a paper not in the library first. A paper cited in an
+// HTML version (its INSPIRE card) is added as the References panel adds
+// one: from its INSPIRE record.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { config } from "../../../../package.json";
 import { getString } from "../../../utils/locale";
-import { openAttachment } from "../../inspire/library/localPdf";
-import { loadedItem } from "../../inspire/library/localStatus";
+import { getPref } from "../../../utils/prefs";
+import { createItemFromInspireRecord } from "../../inspire/library/itemCreation";
+import { findFullText, openAttachment } from "../../inspire/library/localPdf";
+import {
+  loadedItem,
+  refreshLocalState,
+} from "../../inspire/library/localStatus";
 import {
   linkItems,
   type RelationChange,
@@ -38,17 +46,16 @@ import {
   type AddPaperOutcome,
   type AddPaperRequest,
 } from "../addToLibrary";
-import { fetchArxivApiEntries } from "../arxivApi";
+import type { fetchArxivApiEntries } from "../arxivApi";
 import {
-  htmlSnapshotID,
   saveArxivHtmlSnapshot,
-  type HtmlSnapshotResult,
+  saveArxivHtmlVersion,
 } from "../arxivHtmlSnapshot";
 import type { ArxivPdfResult } from "../arxivPdf";
 import { arxivAddRequest } from "../batchAdd";
 import type { NoticeAction, WindowReporter } from "./browserActions";
 import type { BrowserEntry } from "./browserList";
-import { reasonText } from "./browserText";
+import { htmlSaveText, reasonText } from "./browserText";
 
 const NOTE_TEXTS: Record<AddNote, Parameters<typeof getString>[0]> = {
   journalDoiMismatch: "arxiv-browser-note-journal-mismatch",
@@ -95,6 +102,8 @@ export interface LibraryActionsOptions {
   saveHtmlSnapshot?: typeof saveArxivHtmlSnapshot;
   /** Asks the arXiv API for versions (default: fetchArxivApiEntries) */
   apiEntries?: typeof fetchArxivApiEntries;
+  /** Adds an INSPIRE record (default: createItemFromInspireRecord) */
+  addRecord?: typeof createItemFromInspireRecord;
 }
 
 /** Why a paper was not added, in words */
@@ -132,22 +141,6 @@ export function pdfFailureText(
       return getString("arxiv-browser-pdf-files-not-editable");
     case "save":
       return getString("arxiv-browser-pdf-save");
-    default:
-      return reasonText(result.reason);
-  }
-}
-
-/** Why an HTML snapshot was not saved, in words */
-function htmlFailureText(
-  result: Extract<HtmlSnapshotResult, { status: "failed" }>,
-): string {
-  switch (result.reason) {
-    case "noHtml":
-      return getString("arxiv-browser-html-no-html");
-    case "filesNotEditable":
-      return getString("arxiv-browser-pdf-files-not-editable");
-    case "capture":
-      return getString("arxiv-browser-html-capture");
     default:
       return reasonText(result.reason);
   }
@@ -212,6 +205,80 @@ export class LibraryActions {
     const target = await this.chooseTarget(how.anchor);
     if (!target) return;
     await this.addTo(entry, target, how);
+  }
+
+  /**
+   * Add a paper of INSPIRE's reference list where the user chooses, from its
+   * INSPIRE record; one already in the library is shown instead. With
+   * "find full text on import", its PDF is looked for.
+   */
+  async addReference(
+    entry: InspireReferenceEntry,
+    anchor: HTMLElement,
+  ): Promise<void> {
+    const recid = entry.recid;
+    const job = `recid:${recid}`;
+    if (!recid || this.adding.has(job)) return;
+    const name = entry.title ? `“${entry.title}”` : `INSPIRE ${recid}`;
+    await refreshLocalState([entry]);
+    if (this.disposed) return;
+    // The library could not be read: not added (it may have the paper)
+    if (entry.localStatusUnknown) {
+      this.reporter.notify(
+        getString("references-panel-library-lookup-failed-add"),
+      );
+      return;
+    }
+    if (entry.localItemID) {
+      this.reporter.ask(getString("references-panel-dot-local"), [
+        this.showAction(entry.localItemIDs ?? [entry.localItemID]),
+      ]);
+      return;
+    }
+    const target = await this.chooseTarget(anchor);
+    if (!target) return;
+    this.adding.add(job);
+    const progress = this.reporter.startProgress(
+      getString("arxiv-browser-adding", { args: { id: name } }),
+    );
+    let item: Zotero.Item | null = null;
+    let failure = getString("references-panel-toast-missing");
+    try {
+      item = await (this.options.addRecord ?? createItemFromInspireRecord)(
+        recid,
+        target,
+      );
+    } catch (error) {
+      failure = String(error);
+    } finally {
+      progress.close();
+      this.adding.delete(job);
+    }
+    if (this.disposed) return;
+    if (!item) {
+      this.reporter.ask(
+        getString("arxiv-browser-not-added", {
+          args: { id: name, reason: failure },
+        }),
+        [],
+      );
+      return;
+    }
+    entry.localItemID = item.id;
+    entry.localItemIDs = [item.id];
+    this.reporter.ask(
+      getString("arxiv-browser-added", {
+        args: { id: name, target: target.name },
+      }),
+      [this.showAction([item.id])],
+    );
+    if (getPref("auto_find_fulltext_on_import") === true) {
+      void findFullText(item.id).catch((error) =>
+        Zotero.debug(
+          `[${config.addonName}] Find full text after adding failed: ${error}`,
+        ),
+      );
+    }
   }
 
   private async addTo(
@@ -488,75 +555,30 @@ export class LibraryActions {
     const progress = this.reporter.startProgress(
       getString("arxiv-browser-html-saving", { args: { id } }),
     );
-    let version: number | undefined;
-    let result: HtmlSnapshotResult | "there";
-    try {
-      version = wanted ?? entry.listing.version;
-      if (version === undefined) {
-        const api = await (this.options.apiEntries ?? fetchArxivApiEntries)([
-          id,
-        ]);
-        version = api.entries.get(id)?.version;
-      }
-      if (version === undefined) {
-        result = {
-          status: "failed",
-          reason: "capture",
-          message: "The arXiv API gave no version",
-        };
-      } else if (htmlSnapshotID(item.id, id, version) !== null) {
-        result = "there";
-      } else {
-        result = await (this.options.saveHtmlSnapshot ?? saveArxivHtmlSnapshot)(
-          item,
-          { id, version },
-        );
-      }
-    } catch (error) {
-      result = { status: "failed", reason: "capture", message: String(error) };
-    } finally {
+    const outcome = await saveArxivHtmlVersion(
+      item,
+      id,
+      wanted ?? entry.listing.version,
+      {
+        saveHtmlSnapshot: this.options.saveHtmlSnapshot,
+        apiEntries: this.options.apiEntries,
+      },
+    ).finally(() => {
       progress.close();
       this.savingHtml.delete(job);
-    }
+    });
     if (this.disposed) return;
-    if (result === "there" || result.status === "saved") {
-      const attachmentID =
-        result === "there"
-          ? htmlSnapshotID(item.id, id, version)
-          : result.attachment.id;
-      const args = { id, version: version! };
-      this.reporter.ask(
-        getString(
-          result === "there"
-            ? "arxiv-browser-html-there"
-            : "arxiv-browser-html-saved",
-          { args },
-        ),
-        [
-          ...(attachmentID !== null
-            ? [
-                {
-                  label: getString("arxiv-browser-html-menu-open"),
-                  run: () => void openAttachment(attachmentID),
-                },
-              ]
-            : []),
-          this.showAction([item.id]),
-        ],
-      );
-      return;
-    }
     this.reporter.ask(
-      getString("arxiv-browser-html-failed", {
-        args: {
-          id,
-          reason:
-            version === undefined
-              ? getString("arxiv-browser-html-no-version")
-              : htmlFailureText(result),
-        },
-      }),
-      [],
+      htmlSaveText(id, outcome),
+      outcome.status === "failed"
+        ? []
+        : [
+            {
+              label: getString("arxiv-browser-html-menu-open"),
+              run: () => void openAttachment(outcome.attachmentID),
+            },
+            this.showAction([item.id]),
+          ],
     );
   }
 

@@ -1,4 +1,4 @@
-import { JSDOM, type DOMWindow } from "jsdom";
+import { JSDOM, VirtualConsole, type DOMWindow } from "jsdom";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { config } from "../package.json";
@@ -11,7 +11,11 @@ import { ArxivScheduler } from "../src/modules/arxiv/arxivFetch";
 import type { InspireBibtexAnswer } from "../src/modules/arxiv/inspireByArxiv";
 import { ListingService } from "../src/modules/arxiv/listingService";
 import { MemoryListingStore } from "../src/modules/arxiv/listingStore";
-import { ArxivBrowserView } from "../src/modules/arxiv/browser/ArxivBrowserView";
+import {
+  ArxivBrowserView,
+  navigationKey,
+} from "../src/modules/arxiv/browser/ArxivBrowserView";
+import { PLACE_MESSAGE } from "../src/modules/arxiv/arxivHtmlPlace";
 import type { InspireRecordAnswer } from "../src/modules/arxiv/browser/browserActions";
 import {
   ReadingState,
@@ -48,7 +52,11 @@ vi.mock("../src/modules/inspire/apiUtils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/modules/inspire/apiUtils")>()),
   ...clipboard,
 }));
-// The batch import's duplicate check: none of the papers is in the library
+// The batch import's duplicate check, and the in-library marks of papers
+// cited in an HTML version: none of the papers is in the library
+const libraryMarks = vi.hoisted(() => ({
+  refresh: vi.fn(async (_papers: unknown[]) => [] as unknown[]),
+}));
 vi.mock(
   "../src/modules/inspire/library/localStatus",
   async (importOriginal) => ({
@@ -56,6 +64,7 @@ vi.mock(
       typeof import("../src/modules/inspire/library/localStatus")
     >()),
     findDuplicates: async () => new Map(),
+    refreshLocalState: (papers: unknown[]) => libraryMarks.refresh(papers),
   }),
 );
 
@@ -648,6 +657,35 @@ describe("arXiv browser: the list", () => {
     return { ...env, view };
   }
 
+  it("shows a title's sub- and superscripts without a Unicode form as elements, not as tags", async () => {
+    const env = environment();
+    subscribe(["hep-ph"]);
+    // The title of arXiv:2610.00138: no Unicode subscript c or superscript *
+    env.site.html(
+      LIST_URL("hep-ph"),
+      newPageHtml("hep-ph", "2026-09-25", [
+        {
+          id: "2609.90001",
+          section: "new",
+          primary: "hep-ph",
+          title: String.raw`M1 Radiative Transitions in the $B_c$ System after the $B_c^\ast(1S)$ Observation`,
+        },
+      ]),
+    );
+    env.open();
+    await env.settle();
+
+    const title = rows(env.root)[0].querySelector(
+      ".zinspire-ref-entry__title-link",
+    )!;
+    expect(title.innerHTML).toBe(
+      "M1 Radiative Transitions in the B<sub>c</sub> System after the B<sub>c</sub><sup>*</sup>(1S) Observation",
+    );
+    expect(title.textContent).toBe(
+      "M1 Radiative Transitions in the Bc System after the Bc*(1S) Observation",
+    );
+  });
+
   it("keeps only the chosen categories' papers with the chips, each where that category lists it", async () => {
     const env = environment();
     subscribe(["hep-ph", "hep-lat", "hep-ex"]);
@@ -1062,6 +1100,10 @@ describe("arXiv browser: read-only actions and keys", () => {
 
   it("opens arXiv's HTML version, offering it unless the listing says there is none", async () => {
     const { root, launch } = await loaded();
+    // A window that cannot show pages: the web browser, and no empty pane
+    expect(
+      root.querySelector<HTMLElement>(".arxiv-browser__html-pane")!.hidden,
+    ).toBe(true);
     // Oldest first: the replacements without and with an HTML link are on
     // the first page
     const sort = select(root, "sort");
@@ -1655,6 +1697,1078 @@ describe("arXiv browser: read-only actions and keys", () => {
     expect(view.listPane.currentPage).toBe(0);
     await clock.advanceBy(60000);
     expect(site.sent.length).toBe(sent);
+  });
+});
+
+describe("arXiv browser: the HTML version beside the list", () => {
+  /** The listeners the window's message manager was given, by message */
+  let pageMessages: Map<string, (message: unknown) => void>;
+  let frameScripts: string[];
+
+  /** A window that can show pages: Zotero's elements and message manager */
+  async function loaded(options: Record<string, unknown> = {}) {
+    const env = environment();
+    subscribe(["hep-ph"]);
+    serveHepPh(env.site);
+    const doc = win.document as any;
+    doc.createXULElement = (tag: string) => {
+      const element = doc.createElement(tag);
+      element.openPopup = vi.fn();
+      if (tag === "findbar") {
+        // The platform's find bar: closed until asked for, with its field
+        // (named html:input, as the platform's markup has it) and a button
+        element.hidden = true;
+        element.append(
+          doc.createElementNS("http://www.w3.org/1999/xhtml", "html:input"),
+          doc.createElement("toolbarbutton"),
+        );
+        element.onFindCommand = vi.fn(() => {
+          element.hidden = false;
+        });
+        element.onFindAgainCommand = vi.fn();
+        element.close = vi.fn(() => {
+          element.hidden = true;
+        });
+      }
+      return element;
+    };
+    pageMessages = new Map();
+    frameScripts = [];
+    (win as any).messageManager = {
+      loadFrameScript: (url: string) => frameScripts.push(url),
+      removeDelayedFrameScript: (url: string) =>
+        frameScripts.splice(frameScripts.indexOf(url), 1),
+      addMessageListener: (name: string, listener: () => void) =>
+        pageMessages.set(name, listener),
+      removeMessageListener: (name: string) => pageMessages.delete(name),
+    };
+    const load = vi.fn();
+    const view = env.open({ loadHtmlPage: load, ...options });
+    await env.settle();
+    // Oldest first: a paper with an HTML link is on the first page
+    const sort = select(env.root, "sort");
+    sort.value = "id-asc";
+    sort.dispatchEvent(new win.Event("change"));
+    const { root } = env;
+    const rowOf = (id: string) =>
+      rows(root).find((row) => row.dataset.entryId!.includes(id))!;
+    return {
+      ...env,
+      view,
+      load,
+      rowOf,
+      htmlButton: (id: string) =>
+        rowOf(id).querySelector<HTMLButtonElement>(
+          ".arxiv-browser__html-button",
+        )!,
+      pane: root.querySelector<HTMLElement>(".arxiv-browser__html-pane")!,
+      detail: root.querySelector<HTMLElement>(".arxiv-browser__detail")!,
+      list: root.querySelector<HTMLElement>(".arxiv-browser__list-pane")!,
+      page: () => root.querySelector<HTMLElement>("browser"),
+      findBar: () =>
+        root.querySelector("findbar") as
+          | (HTMLElement & {
+              browser?: unknown;
+              onFindCommand: ReturnType<typeof vi.fn>;
+              onFindAgainCommand: ReturnType<typeof vi.fn>;
+              close: ReturnType<typeof vi.fn>;
+            })
+          | null,
+    };
+  }
+  const ID = "2502.20357";
+  const URL = `https://arxiv.org/html/${ID}`;
+
+  it("shows arXiv's HTML version in the detail pane's place, and the details again", async () => {
+    const env = await loaded();
+    const { root, pane, detail, list, load, launch } = env;
+    expect(pane.hidden).toBe(true);
+    expect(env.page()).toBeNull();
+    expect(list.style.flex).toBe("0 0 60%");
+
+    env.htmlButton(ID).click();
+    expect(launch).not.toHaveBeenCalled();
+    expect(pane.hidden).toBe(false);
+    expect(detail.hidden).toBe(true);
+    const page = env.page()!;
+    expect(page.parentElement).toBe(pane);
+    // Web content, moved to a content process when the page loads
+    expect(page.getAttribute("type")).toBe("content");
+    expect(page.getAttribute("maychangeremoteness")).toBe("true");
+    expect(load).toHaveBeenCalledExactlyOnceWith(page, URL);
+    // arXiv's newest version (maybe newer than the listing's): no number
+    const label = pane.querySelector(".arxiv-browser__html-label")!;
+    expect(label.textContent).toContain(`arXiv:${ID} · `);
+    // At the detail pane's width: the divider stays where it is
+    expect(list.style.flex).toBe("0 0 60%");
+    // The row's paper is the focused one
+    expect(env.view.listPane.focused?.listing.id).toBe(ID);
+
+    // "Loading…" until the page's title has arrived
+    const loading = pane.querySelector<HTMLElement>(
+      ".arxiv-browser__html-loading",
+    )!;
+    expect(loading.hidden).toBe(false);
+    page.dispatchEvent(new win.Event("pagetitlechanged"));
+    expect(loading.hidden).toBe(true);
+
+    // The bar's button opens the page in the web browser instead
+    const [back, outside] = [
+      ...pane.querySelectorAll<HTMLButtonElement>(
+        ".arxiv-browser__html-bar button",
+      ),
+    ];
+    outside.click();
+    expect(launch).toHaveBeenLastCalledWith(URL);
+
+    back.click();
+    expect(pane.hidden).toBe(true);
+    expect(detail.hidden).toBe(false);
+    expect(env.page()).toBeNull();
+    expect(list.style.flex).toBe("0 0 60%");
+    expect(root.querySelector(".arxiv-browser__detail")!.textContent).toContain(
+      ID,
+    );
+  });
+
+  it("shows the HTML version of a paper asked for from outside the window, the list as it was", async () => {
+    const env = await loaded();
+    const { pane, detail, load, launch } = env;
+    const focused = env.view.listPane.focused;
+
+    env.view.showHtml({ id: "hep-ph/0101001", title: "Quantum Weakdynamics" });
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(pane.hidden).toBe(false);
+    expect(detail.hidden).toBe(true);
+    expect(load).toHaveBeenCalledExactlyOnceWith(
+      env.page(),
+      "https://arxiv.org/html/hep-ph/0101001",
+    );
+    expect(pane.querySelector(".arxiv-browser__html-label")!.textContent).toBe(
+      "arXiv:hep-ph/0101001 · Quantum Weakdynamics",
+    );
+    expect(env.view.listPane.focused).toBe(focused);
+
+    // Another paper asked for: in its place
+    env.view.showHtml({ id: ID });
+    expect(load).toHaveBeenLastCalledWith(env.page(), URL);
+    expect(pane.querySelector(".arxiv-browser__html-label")!.textContent).toBe(
+      `arXiv:${ID}`,
+    );
+  });
+
+  describe("back to the details of a page asked for from outside the window", () => {
+    const OUT = "hep-ph/0101001";
+    const record = {
+      id: OUT,
+      version: 2,
+      title: "Quantum Weakdynamics",
+      abstract: "An abstract.",
+      authors: ["Ada Weak"],
+      published: "2001-01-01T00:00:00Z",
+      updated: "2001-02-01T00:00:00Z",
+      primaryCategory: "hep-ph",
+      categories: ["hep-ph"],
+    };
+    const back = (pane: HTMLElement) =>
+      pane.querySelector<HTMLButtonElement>(".arxiv-browser__html-bar button")!;
+    const title = (detail: HTMLElement) =>
+      detail.querySelector(".arxiv-browser__detail-title")?.textContent;
+
+    it("shows the paper's row when the list shows it", async () => {
+      const env = await loaded();
+      const { root, pane, detail } = env;
+      rows(root)
+        .find((row) => !row.dataset.entryId!.includes(ID))!
+        .click();
+      const before = env.view.listPane.focused!;
+      expect(before.listing.id).not.toBe(ID);
+
+      env.view.showHtml({ id: ID });
+      expect(env.view.listPane.focused).toBe(before);
+      back(pane).click();
+
+      expect(pane.hidden).toBe(true);
+      expect(detail.hidden).toBe(false);
+      const focused = env.view.listPane.focused!;
+      expect(focused.listing.id).toBe(ID);
+      expect(title(detail)).toBe(focused.listing.title);
+    });
+
+    it("shows a paper the list does not show alone, from its arXiv record, until the list's focus moves", async () => {
+      let answer: (value: unknown) => void = () => undefined;
+      const apiVersion = vi.fn(
+        () => new Promise((resolve) => (answer = resolve)),
+      );
+      const lookup = vi.fn(
+        async (ids: readonly string[]) =>
+          new Map(ids.filter((id) => id === OUT).map((id) => [id, [7]])),
+      );
+      const env = await loaded({ apiVersion, inLibrary: lookup });
+      const { root, pane, detail } = env;
+      rows(root)[0].click();
+
+      env.view.showHtml({ id: OUT, title: "Quantum Weakdynamics" });
+      back(pane).click();
+
+      // The page has gone; the list stays without a focus while the record
+      // is fetched (its newest version)
+      expect(pane.hidden).toBe(true);
+      expect(detail.hidden).toBe(false);
+      expect(env.view.listPane.focused).toBeNull();
+      expect(detail.textContent).toBe(
+        msg("arxiv-browser-detail-fetching", { id: `arXiv:${OUT}` }),
+      );
+      expect(apiVersion.mock.calls[0].slice(0, 2)).toEqual([OUT, undefined]);
+
+      answer({ ok: true, entry: record });
+      await flushPromises();
+      expect(title(detail)).toBe("Quantum Weakdynamics");
+      // Looked up in the library as the list's papers are
+      expect(lookup.mock.calls.some(([ids]) => ids.includes(OUT))).toBe(true);
+      expect(detail.textContent).toContain(
+        msg("arxiv-browser-detail-in-library"),
+      );
+      // Its page again, and back: the same paper, no second request
+      root
+        .querySelector<HTMLButtonElement>(
+          ".arxiv-browser__detail-actions .arxiv-browser__split button",
+        )!
+        .click();
+      expect(pane.hidden).toBe(false);
+      back(pane).click();
+      expect(title(detail)).toBe("Quantum Weakdynamics");
+      expect(apiVersion).toHaveBeenCalledTimes(1);
+
+      // The list's focus moves: the list's papers again
+      rows(root)[1].click();
+      expect(title(detail)).toBe(env.view.listPane.focused!.listing.title);
+    });
+
+    it("keeps the list's paper when the list's focus moves while the record is fetched", async () => {
+      let answer: (value: unknown) => void = () => undefined;
+      const apiVersion = vi.fn(
+        () => new Promise((resolve) => (answer = resolve)),
+      );
+      const env = await loaded({ apiVersion });
+      const { root, pane, detail } = env;
+      env.view.showHtml({ id: OUT });
+      back(pane).click();
+      expect(detail.textContent).toBe(
+        msg("arxiv-browser-detail-fetching", { id: `arXiv:${OUT}` }),
+      );
+      rows(root)[1].click();
+      const focused = env.view.listPane.focused!;
+
+      answer({ ok: true, entry: record });
+      await flushPromises();
+      expect(env.view.listPane.focused).toBe(focused);
+      expect(title(detail)).toBe(focused.listing.title);
+    });
+
+    it("shows a paper the window has but the filter hides without asking arXiv", async () => {
+      const apiVersion = vi.fn();
+      const env = await loaded({ apiVersion });
+      const { root, pane, detail } = env;
+      const hidden = env.rowOf(ID);
+      const paperTitle = env.view.listPane.entries.find(
+        (entry) => entry.listing.id === ID,
+      )!.listing.title;
+      const filter = root.querySelector<HTMLInputElement>(
+        ".arxiv-browser__filter input",
+      )!;
+      filter.value = "nosuchwordanywhere";
+      filter.dispatchEvent(new win.Event("input"));
+      await vi.waitFor(() => expect(rows(root)).toHaveLength(0));
+      expect(hidden.isConnected).toBe(false);
+
+      env.view.showHtml({ id: ID });
+      back(pane).click();
+      expect(title(detail)).toBe(paperTitle);
+      expect(apiVersion).not.toHaveBeenCalled();
+    });
+
+    it("tells why when the record cannot be fetched", async () => {
+      const apiVersion = vi.fn(async () => ({
+        ok: false,
+        reason: "network",
+        message: "down",
+      }));
+      const env = await loaded({ apiVersion });
+      const { root, pane, detail } = env;
+      env.view.showHtml({ id: OUT });
+      back(pane).click();
+      await flushPromises();
+      expect(detail.textContent).toBe(msg("arxiv-browser-detail-empty"));
+      expect(
+        [...root.querySelectorAll(".arxiv-browser__notice")]
+          .map((notice) => notice.textContent)
+          .join(),
+      ).toContain(
+        msg("arxiv-browser-paper-failed", {
+          id: OUT,
+          reason: msg("arxiv-browser-reason-network"),
+        }),
+      );
+    });
+  });
+
+  it("shows the version the detail pane shows, and the menu's first entry does the same", async () => {
+    const env = await loaded();
+    const { root, pane, load, launch } = env;
+    env.rowOf(ID).click();
+    const split = root.querySelector<HTMLElement>(
+      ".arxiv-browser__detail-actions .arxiv-browser__split",
+    )!;
+    const [open, more] = [...split.querySelectorAll("button")];
+    expect(open.title).toBe(msg("arxiv-browser-open-html"));
+    more.click();
+    const entries = [
+      ...win.document.querySelectorAll("menupopup:last-of-type menuitem"),
+    ];
+    expect(entries.map((entry) => entry.getAttribute("label"))).toEqual([
+      msg("arxiv-browser-html-menu-here"),
+      msg("arxiv-browser-html-menu-browser"),
+      msg("arxiv-browser-html-menu-save"),
+    ]);
+    entries[0].dispatchEvent(new win.Event("command"));
+    expect(pane.hidden).toBe(false);
+    expect(load).toHaveBeenLastCalledWith(env.page(), URL);
+    entries[1].dispatchEvent(new win.Event("command"));
+    expect(launch).toHaveBeenLastCalledWith(URL);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows an older version chosen in the detail pane, named with its number and, once fetched, its title", async () => {
+    const OLD = "2508.00226";
+    const older = (version: number) => ({
+      id: OLD,
+      version,
+      title: `The title of version ${version}`,
+      abstract: `The abstract of version ${version}.`,
+      authors: ["Ada Older"],
+      published: "2025-07-31T10:00:00Z",
+      updated: "2025-08-20T09:30:00Z",
+      primaryCategory: "hep-ph",
+      categories: ["hep-ph"],
+    });
+    // The arXiv API answers when the test lets it
+    const answers: Array<() => void> = [];
+    const apiVersion = vi.fn(
+      (_id: string, version: number) =>
+        new Promise<unknown>((resolve) =>
+          answers.push(() => resolve({ ok: true, entry: older(version) })),
+        ),
+    );
+    const env = await loaded({ apiVersion });
+    const { root, pane, detail, load } = env;
+    env.rowOf(OLD).click();
+    const open = () =>
+      root.querySelector<HTMLButtonElement>(
+        ".arxiv-browser__detail-actions .arxiv-browser__split button",
+      )!;
+    const label = pane.querySelector(".arxiv-browser__html-label")!;
+    /** Back to the details, and there another version chosen */
+    const choose = (version: number) => {
+      pane.querySelector<HTMLButtonElement>("button")!.click();
+      expect(pane.hidden).toBe(true);
+      expect(detail.hidden).toBe(false);
+      const chooser = root.querySelector<HTMLSelectElement>(
+        ".arxiv-browser__version",
+      )!;
+      chooser.value = String(version);
+      chooser.dispatchEvent(new win.Event("change"));
+    };
+    const answer = async () => {
+      answers.shift()!();
+      await flushPromises();
+    };
+    const address = (version?: number) =>
+      `https://arxiv.org/html/${OLD}${version ? `v${version}` : ""}`;
+
+    // The newest, as the listing has it (version 3): arXiv's newest page
+    open().click();
+    expect(load).toHaveBeenLastCalledWith(env.page(), address());
+    expect(label.textContent).toContain(`arXiv:${OLD} · `);
+    const newestTitle = label.textContent!.split(" · ")[1];
+
+    // Version 2, before the API has answered: its page, no title yet
+    choose(2);
+    open().click();
+    expect(load).toHaveBeenLastCalledWith(env.page(), address(2));
+    expect(label.textContent).toBe(`arXiv:${OLD}v2`);
+    await answer();
+    pane.querySelector<HTMLButtonElement>("button")!.click();
+    open().click();
+    expect(label.textContent).toBe(`arXiv:${OLD}v2 · The title of version 2`);
+
+    // Version 1 while version 2 is still the one shown: not version 2's title
+    choose(1);
+    open().click();
+    expect(load).toHaveBeenLastCalledWith(env.page(), address(1));
+    expect(label.textContent).toBe(`arXiv:${OLD}v1`);
+    await answer();
+    pane.querySelector<HTMLButtonElement>("button")!.click();
+    open().click();
+    expect(label.textContent).toBe(`arXiv:${OLD}v1 · The title of version 1`);
+
+    // Back to the newest: the listing's title, no number
+    choose(3);
+    open().click();
+    expect(load).toHaveBeenLastCalledWith(env.page(), address());
+    expect(label.textContent).toBe(`arXiv:${OLD} · ${newestTitle}`);
+  });
+
+  it("goes back to the details when another paper is focused, and leaves the page's keys to the page", async () => {
+    const env = await loaded();
+    const { pane, detail, view } = env;
+    env.htmlButton(ID).click();
+    const page = env.page()!;
+    const focused = view.listPane.focused;
+    // Ctrl/Cmd+W closes the window from the page too
+    const close = vi.spyOn(win, "close").mockImplementation(() => undefined);
+    key(page, "w", { metaKey: true });
+    expect(close).toHaveBeenCalledTimes(1);
+    close.mockRestore();
+
+    // Keys pressed in the page reach the window with the page as target
+    for (const pressed of ["j", "ArrowDown", " ", "a", "x", "Escape"]) {
+      // Not handled here: the page gets the key
+      expect(key(page, pressed, { cancelable: true })).toBe(true);
+    }
+    expect(view.listPane.focused).toBe(focused);
+    expect(pane.hidden).toBe(false);
+
+    // The same paper chosen again in the list: the page stays
+    env.rowOf(ID).click();
+    expect(pane.hidden).toBe(false);
+    // The list loses its focus: the page being read stays
+    key(env.root.querySelector(".arxiv-browser__list")!, "Escape");
+    expect(view.listPane.focused).toBeNull();
+    expect(pane.hidden).toBe(false);
+
+    // Another paper: its details
+    key(env.root.querySelector(".arxiv-browser__list")!, "j");
+    expect(view.listPane.focused?.listing.id).not.toBe(ID);
+    expect(pane.hidden).toBe(true);
+    expect(detail.hidden).toBe(false);
+    expect(env.page()).toBeNull();
+  });
+
+  it("opens the page's links to elsewhere in the web browser, and offers Copy and the link's entries on a right-click", async () => {
+    const env = await loaded();
+    const { launch, copy } = env;
+    env.htmlButton(ID).click();
+    const page = env.page()!;
+    // One script for the window's pages, reporting clicks and right-clicks
+    expect(frameScripts).toHaveLength(1);
+    const script = decodeURIComponent(frameScripts[0]);
+    expect(script).toContain('addEventListener("click", onLinkClick, true)');
+    const link = pageMessages.get("zoteroinspire:arxiv-html-link")!;
+    const menu = pageMessages.get("zoteroinspire:arxiv-html-menu")!;
+
+    link({ target: page, data: `https://arxiv.org/abs/${ID}v2` });
+    expect(launch).toHaveBeenLastCalledWith(`https://arxiv.org/abs/${ID}v2`);
+    launch.mockClear();
+    // Only web addresses, and only from the pane's page
+    link({ target: page, data: "file:///etc/passwd" });
+    link({ target: page, data: { href: "https://arxiv.org" } });
+    link({ target: {}, data: "https://arxiv.org/abs/1" });
+    expect(launch).not.toHaveBeenCalled();
+
+    const entriesOf = () => {
+      const popup = [...win.document.querySelectorAll("menupopup")].at(-1) as
+        | (HTMLElement & { openPopup: ReturnType<typeof vi.fn> })
+        | undefined;
+      return {
+        popup,
+        entries: [...(popup?.children ?? [])] as HTMLElement[],
+      };
+    };
+    // Nothing selected, no link: no menu
+    menu({ target: page, data: { text: " ", link: "", x: 5, y: 6 } });
+    expect(entriesOf().popup).toBeUndefined();
+    menu({
+      target: page,
+      data: {
+        text: "the ground state",
+        link: "https://doi.org/10.1/x",
+        x: 30,
+        y: 40,
+      },
+    });
+    const { popup, entries } = entriesOf();
+    expect(entries.map((entry) => entry.getAttribute("label"))).toEqual([
+      msg("references-panel-abstract-copy-selection"),
+      msg("arxiv-browser-menu-open-link"),
+      msg("arxiv-browser-menu-copy-link"),
+    ]);
+    // At the click, from the page's corner
+    expect(popup!.openPopup).toHaveBeenCalledWith(
+      page,
+      "overlap",
+      30,
+      40,
+      true,
+    );
+    entries[0].dispatchEvent(new win.Event("command"));
+    await flushPromises();
+    expect(copy).toHaveBeenLastCalledWith("the ground state");
+    entries[1].dispatchEvent(new win.Event("command"));
+    expect(launch).toHaveBeenLastCalledWith("https://doi.org/10.1/x");
+    entries[2].dispatchEvent(new win.Event("command"));
+    await flushPromises();
+    expect(copy).toHaveBeenLastCalledWith("https://doi.org/10.1/x");
+
+    // The window closes: the script and the listeners go
+    env.view.dispose();
+    expect(frameScripts).toEqual([]);
+    expect(pageMessages.size).toBe(0);
+    expect(env.page()).toBeNull();
+  });
+
+  it("reports, in the page, the clicks on links that lead out of it, and right-clicks", async () => {
+    const env = await loaded();
+    env.htmlButton(ID).click();
+    // The page: a document at the paper's address, with the script loaded
+    const page = new JSDOM(
+      `<a id="abs" href="/abs/${ID}v2"><svg><path id="icon"></path></svg></a>
+       <a id="pdf" href="/pdf/${ID}" target="_blank"><span>PDF</span></a>
+       <a id="doi" href="https://doi.org/10.1/x">doi</a>
+       <a id="section" href="#S1"><span>1</span></a>
+       <a id="full" href="${URL}#bib.bib3">[3]</a>
+       <a id="script" href="javascript:toggleNavTOC();%20void%200">toggle</a>
+       <a id="mail" href="mailto:a@b.c">mail</a>
+       <p id="text">no link</p>
+       <nav id="navbar" class="ltx_page_navbar"><nav id="toc" class="ltx_TOC"></nav></nav>`,
+      // Its own console: jsdom tells there that it follows no links
+      { url: URL, virtualConsole: new VirtualConsole() },
+    ).window;
+    const sent: Array<[string, unknown]> = [];
+    const run = vi.fn();
+    const listeners: Array<[string, (event: Event) => void, boolean]> = [];
+    let selection = "";
+    new page.Function(
+      "addEventListener",
+      "sendAsyncMessage",
+      "content",
+      decodeURIComponent(frameScripts[0].replace(/^data:[^,]*,/, "")),
+    )(
+      (type: string, listener: (event: Event) => void, capture: boolean) => {
+        listeners.push([type, listener, capture]);
+        page.document.addEventListener(type, listener, capture);
+      },
+      (name: string, data: unknown) => sent.push([name, data]),
+      {
+        location: page.location,
+        document: page.document,
+        getSelection: () => selection,
+      },
+    );
+    // The eval of the links' own window
+    (page as any).eval = run;
+    expect(listeners.map(([type, , capture]) => [type, capture])).toEqual([
+      ["click", true],
+      ["auxclick", true],
+      ["click", false],
+      ["contextmenu", false],
+      ["DOMContentLoaded", true],
+      // A deleted arXiv stylesheet replaced (arxivHtmlStylesheet.test.ts)
+      ["error", true],
+      ["load", true],
+      // Previews of a link's equation, figure, table or reference
+      // (arxivHtmlPreview.test.ts)
+      ["mouseover", false],
+      ["mouseout", false],
+      ["mousedown", true],
+      ["scroll", true],
+      ["keydown", true],
+      ["resize", true],
+      ["pagehide", true],
+      // The citations of a selection (arxivHtmlSelection.test.ts)
+      ["mouseup", true],
+      ["keyup", true],
+      ["mousedown", true],
+      ["scroll", true],
+      ["resize", true],
+      ["pagehide", true],
+      // The reader's place, for Back and Forward (arxivHtmlPlace.test.ts)
+      ["hashchange", true],
+      ["pageshow", true],
+      ["scroll", true],
+    ]);
+    // arXiv's empty box for the table of contents, over the text in a
+    // narrow view, lets the pointer through once the page is read; the
+    // contents take it
+    const navbar = page.document.getElementById("navbar")!;
+    expect(navbar.style.pointerEvents).toBe("");
+    page.document.dispatchEvent(new page.Event("DOMContentLoaded"));
+    expect(navbar.style.pointerEvents).toBe("none");
+    expect(page.document.getElementById("toc")!.style.pointerEvents).toBe(
+      "auto",
+    );
+    // The script starting on a page already read: at once
+    const read = new JSDOM(
+      `<nav id="navbar" class="ltx_page_navbar"><nav class="ltx_TOC"></nav></nav>`,
+      { url: URL },
+    ).window;
+    Object.defineProperty(read.document, "readyState", { value: "complete" });
+    new read.Function(
+      "addEventListener",
+      "sendAsyncMessage",
+      "content",
+      decodeURIComponent(frameScripts[0].replace(/^data:[^,]*,/, "")),
+    )(() => undefined, () => undefined, { document: read.document });
+    expect(read.document.getElementById("navbar")!.style.pointerEvents).toBe(
+      "none",
+    );
+    /** A click on `id`: whether it was left to the page, and what was sent */
+    const press = (id: string, type = "click", button = 0) => {
+      sent.length = 0;
+      const left = page.document.getElementById(id)!.dispatchEvent(
+        new page.MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          button,
+          clientX: 12,
+          clientY: 34,
+        }),
+      );
+      return { left, sent: [...sent] };
+    };
+    const LINK = "zoteroinspire:arxiv-html-link";
+    // Out of the page, also from an element inside the link: reported
+    const abs = press("icon");
+    expect(abs.sent).toEqual([[LINK, `https://arxiv.org/abs/${ID}v2`]]);
+    expect(abs.left).toBe(false);
+    expect(press("pdf").sent).toEqual([[LINK, `https://arxiv.org/pdf/${ID}`]]);
+    expect(press("doi").sent).toEqual([[LINK, "https://doi.org/10.1/x"]]);
+    // The middle button too; the right button asks for the menu
+    expect(press("doi", "auxclick", 1).sent).toHaveLength(1);
+    expect(press("doi", "auxclick", 2).sent).toEqual([]);
+    // Within the page, and other kinds of link: the page's own
+    for (const id of ["section", "full", "mail", "text"]) {
+      expect(press(id)).toEqual({ left: true, sent: [] });
+    }
+    expect(run).not.toHaveBeenCalled();
+
+    // A javascript: link (Zotero follows none): its code is run in the page,
+    // unless the page handled the click itself; not by the other buttons
+    expect(press("script")).toEqual({ left: false, sent: [] });
+    expect(run.mock.calls).toEqual([["toggleNavTOC(); void 0"]]);
+    expect(press("script", "auxclick", 1).sent).toEqual([]);
+    page.document
+      .getElementById("script")!
+      .addEventListener("click", (event) => event.preventDefault(), {
+        once: true,
+      });
+    press("script");
+    expect(run).toHaveBeenCalledTimes(1);
+
+    // A right-click: the selection and the link under it, where it was
+    selection = "the ground state";
+    expect(press("doi", "contextmenu", 2).sent).toEqual([
+      [
+        "zoteroinspire:arxiv-html-menu",
+        {
+          text: "the ground state",
+          link: "https://doi.org/10.1/x",
+          x: 12,
+          y: 34,
+        },
+      ],
+    ]);
+    expect(press("text", "contextmenu", 2).sent[0][1]).toMatchObject({
+      link: "",
+    });
+  });
+
+  /**
+   * The window showing the HTML version of ID, the page's bibliography told:
+   * entry 1 a paper of INSPIRE's list (by its arXiv link), entry 2 a book
+   */
+  async function lookUp(
+    references: (
+      id: string,
+    ) => Promise<Array<Record<string, unknown>> | null> = async (id) =>
+      // A copy: adding the paper marks it
+      id === ID ? [{ ...ANASTASIOU }] : null,
+  ) {
+    const target = {
+      libraryID: 1,
+      primaryRowID: "L1",
+      collectionIDs: [],
+      tags: [],
+      note: "",
+    };
+    const pickTarget = vi.fn(async () => target);
+    const addRecord = vi.fn(async () => ({ id: 901 }) as Zotero.Item);
+    const citationReferences = vi.fn(references);
+    const env = await loaded({ citationReferences, pickTarget, addRecord });
+    Object.assign((globalThis as any).Zotero, {
+      Libraries: {
+        get: (libraryID: number) => ({
+          libraryID,
+          name: "My Library",
+          editable: true,
+        }),
+      },
+    });
+    const { root } = env;
+    env.htmlButton(ID).click();
+    const page = env.page()!;
+    page.getBoundingClientRect = () =>
+      ({ left: 600, top: 100, right: 1155, bottom: 840 }) as DOMRect;
+    const path = `/html/${ID}`;
+    const tell = (entries: unknown[], from = path) =>
+      pageMessages.get("zoteroinspire:arxiv-html-citations")!({
+        target: page,
+        data: { page: from, entries },
+      });
+    const selected = (data: Record<string, unknown>, from: unknown = page) =>
+      pageMessages.get("zoteroinspire:arxiv-html-selection")!({
+        target: from,
+        data: {
+          page: path,
+          rect: { left: 10, top: 20, right: 60, bottom: 40 },
+          ...data,
+        },
+      });
+    const bar = () => root.querySelector(".zoteroinspire-citation-bar");
+    const buttons = () => [...bar()!.querySelectorAll("button")];
+    const card = () =>
+      [...root.querySelectorAll<HTMLElement>(".zinspire-preview-card")].find(
+        (element) => element.style.display !== "none",
+      );
+    /** The card's library lookup, and the card's delays (real timers) */
+    const settled = async (ms: number) => {
+      await flushPromises();
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      await flushPromises();
+    };
+    /** The pointer onto the bar's button `index` (off the one it was on) */
+    let on: HTMLElement | null = null;
+    const point = async (index: number) => {
+      on?.dispatchEvent(new win.MouseEvent("mouseleave"));
+      on = buttons()[index];
+      on.dispatchEvent(new win.MouseEvent("mouseenter"));
+      await settled(300);
+    };
+    const notices = () =>
+      [...root.querySelectorAll(".arxiv-browser__notice")].map(
+        (notice) => notice.textContent,
+      );
+    tell(ENTRIES);
+    return {
+      ...env,
+      target,
+      pickTarget,
+      addRecord,
+      citationReferences,
+      page,
+      path,
+      tell,
+      selected,
+      bar,
+      buttons,
+      card,
+      settled,
+      point,
+      notices,
+    };
+  }
+  const ANASTASIOU = {
+    id: "entry-635943",
+    recid: "635943",
+    title: "High precision QCD at hadron colliders",
+    authors: ["Charalampos Anastasiou"],
+    authorText: "Charalampos Anastasiou",
+    arxivDetails: { id: "hep-ph/0312266" },
+  };
+  const ENTRIES = [
+    {
+      id: "bib.bib1",
+      text: "C. Anastasiou et al., Phys. Rev. D 69 (2004) 094008",
+      links: ["http://arxiv.org/abs/hep-ph/0312266"],
+    },
+    { id: "bib.bib2", text: "A book (1996).", links: [] },
+  ];
+  const CITATIONS = [
+    { id: "bib.bib1", label: "1" },
+    { id: "bib.bib2", label: "2" },
+  ];
+
+  it("shows a bar for citations selected in the page, and INSPIRE's card of the one the pointer is on, as the PDF reader's look-up", async () => {
+    const env = await lookUp();
+    const { bar, buttons, card, selected, point, citationReferences } = env;
+    // From another element, or the page of another paper: no bar
+    selected({ citations: CITATIONS }, {});
+    selected({ page: "/html/2510.00001", citations: CITATIONS });
+    expect(bar()).toBeNull();
+    expect(citationReferences).not.toHaveBeenCalled();
+
+    selected({ citations: CITATIONS });
+    // INSPIRE's list asked for with the first citations, once
+    expect(citationReferences).toHaveBeenCalledExactlyOnceWith(
+      ID,
+      expect.anything(),
+    );
+    expect(bar()!.textContent).toContain("Refs.");
+    expect(buttons().map((button) => button.textContent)).toEqual(["1", "2"]);
+    // Not the PDF look-up's "Look up in INSPIRE Refs." (no click action here)
+    expect(buttons()[0].title).toBe("");
+
+    // The pointer on a number: INSPIRE's card of the reference
+    await point(0);
+    expect(card()!.textContent).toContain(
+      "High precision QCD at hadron colliders",
+    );
+    // Add: where the user chooses, from the INSPIRE record
+    const add = [...card()!.querySelectorAll("button")].find(
+      (button) => button.textContent === msg("references-panel-button-add"),
+    )!;
+    add.click();
+    await env.settled(10);
+    expect(env.pickTarget).toHaveBeenCalledTimes(1);
+    expect(env.addRecord).toHaveBeenCalledWith(
+      "635943",
+      expect.objectContaining(env.target),
+    );
+    expect(env.notices()).toContainEqual(
+      expect.stringContaining(
+        msg("arxiv-browser-added", {
+          id: "“High precision QCD at hadron colliders”",
+          target: "My Library",
+        }),
+      ),
+    );
+    // The card says so
+    expect(card()!.textContent).not.toContain(
+      msg("references-panel-button-add"),
+    );
+
+    // A reference INSPIRE's list does not have: the page's entry
+    await point(1);
+    expect(card()!.textContent).toBe("A book (1996).");
+    buttons()[1].dispatchEvent(new win.MouseEvent("mouseleave"));
+    await env.settled(300);
+    expect(card()).toBeUndefined();
+
+    // The selection without citations: the bar goes
+    selected({ citations: [] });
+    expect(bar()).toBeNull();
+    // Another selection of the same page: no new request
+    selected({ citations: CITATIONS.slice(1) });
+    expect(bar()!.textContent).toContain("Refs. [2]");
+    expect(citationReferences).toHaveBeenCalledTimes(1);
+    // The pane closed: the bar goes
+    env.pane
+      .querySelector<HTMLButtonElement>(".arxiv-browser__html-bar button")!
+      .click();
+    expect(bar()).toBeNull();
+  });
+
+  it("matches the entries of another version's page of the paper again (their numbering can differ), without asking INSPIRE again", async () => {
+    const env = await lookUp();
+    const { card, selected, point, tell, path } = env;
+    selected({ citations: CITATIONS });
+    await point(0);
+    expect(card()!.textContent).toContain("High precision QCD");
+    // Version 1: the paper is its second entry, the book its first
+    tell(
+      [
+        { ...ENTRIES[1], id: "bib.bib1" },
+        { ...ENTRIES[0], id: "bib.bib2" },
+      ],
+      `${path}v1`,
+    );
+    selected({ page: `${path}v1`, citations: CITATIONS });
+    await point(0);
+    expect(card()!.textContent).toBe("A book (1996).");
+    await point(1);
+    expect(card()!.textContent).toContain("High precision QCD");
+    expect(env.citationReferences).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks INSPIRE again with the next citations selected after it could not be reached, the page's entries meanwhile", async () => {
+    let reached = false;
+    const env = await lookUp(async () => {
+      if (!reached) throw new Error("INSPIRE not reached");
+      return [{ ...ANASTASIOU }];
+    });
+    const { card, selected, point } = env;
+    selected({ citations: CITATIONS });
+    await point(0);
+    expect(card()!.textContent).toBe(ENTRIES[0].text);
+    // Pointing at the numbers asks nothing more
+    await point(1);
+    expect(card()!.textContent).toBe(ENTRIES[1].text);
+    expect(env.citationReferences).toHaveBeenCalledTimes(1);
+    reached = true;
+    selected({ citations: CITATIONS });
+    expect(env.citationReferences).toHaveBeenCalledTimes(2);
+    await point(0);
+    expect(card()!.textContent).toContain("High precision QCD");
+  });
+
+  it("does not add a cited paper when the library cannot be read", async () => {
+    const env = await lookUp();
+    env.selected({ citations: CITATIONS });
+    await env.point(0);
+    libraryMarks.refresh.mockImplementationOnce(async (papers) => {
+      for (const paper of papers as Array<{ localStatusUnknown?: boolean }>) {
+        paper.localStatusUnknown = true;
+      }
+      return papers;
+    });
+    [...env.card()!.querySelectorAll("button")]
+      .find(
+        (button) => button.textContent === msg("references-panel-button-add"),
+      )!
+      .click();
+    await env.settled(10);
+    expect(env.pickTarget).not.toHaveBeenCalled();
+    expect(env.addRecord).not.toHaveBeenCalled();
+    expect(env.notices()).toContainEqual(
+      expect.stringContaining(
+        msg("references-panel-library-lookup-failed-add"),
+      ),
+    );
+  });
+
+  it("finds in the page with the platform's find bar: Ctrl/Cmd+F, Ctrl/Cmd+G, Escape", async () => {
+    const env = await loaded();
+    const { root, pane, view, launch } = env;
+    const list = root.querySelector<HTMLElement>(".arxiv-browser__list")!;
+    const pressed = (
+      target: EventTarget,
+      name: string,
+      init: KeyboardEventInit = {},
+    ) => !key(target, name, { cancelable: true, ...init });
+
+    // No page shown: the keys are not taken
+    expect(pressed(list, "f", { metaKey: true })).toBe(false);
+    expect(pressed(list, "g", { metaKey: true })).toBe(false);
+
+    env.htmlButton(ID).click();
+    const page = env.page()!;
+    const bar = env.findBar()!;
+    // Below the page, finding in it; the page's element is of the group
+    // the find bar's actor serves
+    expect(page.nextElementSibling === bar).toBe(true);
+    expect(bar.browser === page).toBe(true);
+    expect(page.getAttribute("messagemanagergroup")).toBe("browsers");
+    // A load moves the page to another process: the bar is told again
+    // (not on XULFrameLoaderCreated: the page's element drops its finder
+    // after that)
+    bar.browser = null;
+    page.dispatchEvent(new win.Event("XULFrameLoaderCreated"));
+    expect(bar.browser).toBeNull();
+    page.dispatchEvent(new win.Event("DidChangeBrowserRemoteness"));
+    expect(bar.browser === page).toBe(true);
+
+    // From the page, the list and the bar's own field
+    expect(pressed(page, "f", { metaKey: true })).toBe(true);
+    expect(bar.onFindCommand).toHaveBeenCalledTimes(1);
+    expect(pressed(list, "f", { ctrlKey: true })).toBe(true);
+    expect(bar.onFindCommand).toHaveBeenCalledTimes(2);
+    const [field, barButton] = [...bar.children];
+    expect(field.tagName).toBe("HTML:INPUT");
+    expect(pressed(field, "g", { metaKey: true })).toBe(true);
+    expect(bar.onFindAgainCommand).toHaveBeenLastCalledWith(false);
+    expect(pressed(page, "G", { metaKey: true, shiftKey: true })).toBe(true);
+    expect(bar.onFindAgainCommand).toHaveBeenLastCalledWith(true);
+
+    // Keys typed in the bar are the bar's, not the list's
+    const focused = view.listPane.focused;
+    for (const typed of ["a", "l", "j", "x", " ", "Enter", "Escape"]) {
+      expect(pressed(field, typed)).toBe(false);
+      expect(pressed(barButton, typed)).toBe(false);
+    }
+    expect(view.listPane.focused).toBe(focused);
+    expect(launch).not.toHaveBeenCalled();
+    expect(bar.hidden).toBe(false);
+
+    // Escape in the page closes the bar, once; then it is the page's key
+    expect(pressed(page, "Escape")).toBe(true);
+    expect(bar.close).toHaveBeenCalledTimes(1);
+    expect(pressed(page, "Escape")).toBe(false);
+    expect(pane.hidden).toBe(false);
+
+    // While the calendar is open: its Escape, also from the find bar, and
+    // no finding
+    pressed(page, "f", { metaKey: true });
+    const days = root.querySelector<HTMLButtonElement>(
+      ".arxiv-browser__days-button",
+    )!;
+    days.click();
+    const calendar = root.querySelector<HTMLElement>(
+      ".arxiv-browser__daypicker",
+    )!;
+    expect(calendar.hidden).toBe(false);
+    expect(pressed(list, "f", { metaKey: true })).toBe(false);
+    expect(pressed(field, "Escape")).toBe(true);
+    expect(calendar.hidden).toBe(true);
+    expect(bar.hidden).toBe(false);
+
+    // Another paper in the same element: the bar closes
+    const other = rows(root).find(
+      (row) =>
+        !row.dataset.entryId!.includes(ID) &&
+        row.querySelector(".arxiv-browser__html-button"),
+    )!;
+    other
+      .querySelector<HTMLButtonElement>(".arxiv-browser__html-button")!
+      .click();
+    expect(env.findBar() === bar).toBe(true);
+    expect(bar.close).toHaveBeenCalledTimes(2);
+
+    // Back to the details: the bar goes with the page
+    pane.querySelector<HTMLButtonElement>("button")!.click();
+    expect(env.findBar()).toBeNull();
+    expect(pressed(list, "f", { metaKey: true })).toBe(false);
+  });
+
+  it("keeps the divider where it is, and its one position for both panes", async () => {
+    const env = await loaded();
+    const { root, list } = env;
+    const main = root.querySelector<HTMLElement>(".arxiv-browser__main")!;
+    const divider = root.querySelector<HTMLElement>(".arxiv-browser__divider")!;
+    main.getBoundingClientRect = () => ({ left: 0, width: 1000 }) as DOMRect;
+    const drag = (clientX: number) => {
+      divider.dispatchEvent(
+        new win.MouseEvent("mousedown", { bubbles: true, button: 0 }),
+      );
+      win.document.dispatchEvent(new win.MouseEvent("mousemove", { clientX }));
+      win.document.dispatchEvent(new win.MouseEvent("mouseup"));
+    };
+    // Set beside the details: the page is shown at that width, also
+    // another paper's
+    drag(500);
+    expect(list.style.flex).toBe("0 0 50%");
+    env.htmlButton(ID).click();
+    expect(list.style.flex).toBe("0 0 50%");
+    rows(root)
+      .find(
+        (row) =>
+          !row.dataset.entryId!.includes(ID) &&
+          row.querySelector(".arxiv-browser__html-button"),
+      )!
+      .querySelector<HTMLButtonElement>(".arxiv-browser__html-button")!
+      .click();
+    expect(list.style.flex).toBe("0 0 50%");
+    // Dragged beside the page: the same position beside the details
+    drag(300);
+    expect(list.style.flex).toBe("0 0 30%");
+    expect(prefs[`${PREFIX}.arxiv_browser_list_share`]).toBe(30);
+
+    root
+      .querySelector<HTMLButtonElement>(".arxiv-browser__html-bar button")!
+      .click();
+    expect(list.style.flex).toBe("0 0 30%");
+    env.htmlButton(ID).click();
+    expect(list.style.flex).toBe("0 0 30%");
   });
 });
 
@@ -3000,6 +4114,30 @@ describe("arXiv browser: adding and relating", () => {
     ]);
   });
 
+  it("in a window that shows pages, still opens a saved HTML snapshot in Zotero's reader", async () => {
+    (win.document as any).createXULElement = (tag: string) =>
+      win.document.createElement(tag);
+    const { root, launch, readerOpen, attach, view } = await loaded({
+      related: "2609.28538",
+    });
+    await vi.waitFor(() => expect(dot(rows(root)[0])).toBe("●"));
+    const parts = htmlParts(rows(root)[0]);
+    const pane = root.querySelector<HTMLElement>(".arxiv-browser__html-pane")!;
+    parts.open.click();
+    expect(pane.hidden).toBe(false);
+    pane.querySelector<HTMLButtonElement>("button")!.click();
+    expect(pane.hidden).toBe(true);
+
+    const snapshot = attach(77, "https://arxiv.org/html/2609.28538v1");
+    view.listPane.refreshPdfButtons();
+    parts.open.click();
+    expect(readerOpen).toHaveBeenLastCalledWith(snapshot.id, undefined, {
+      allowDuplicate: false,
+    });
+    expect(pane.hidden).toBe(true);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   it("saves the HTML version of a paper in the library to its item, at the listing's version, once", async () => {
     const { root, saveHtmlSnapshot, items, notices, pickTarget, addPapers } =
       await loaded({ related: "2609.28538" });
@@ -3108,6 +4246,40 @@ describe("arXiv browser: adding and relating", () => {
       expect(launch).toHaveBeenCalledTimes(1);
     });
 
+    it("opens arXiv's PDF of an older version of a paper in the library without a PDF, and finds the PDF at the newest version (Find Full Text cannot ask for an older one)", async () => {
+      const { root, launch, row, pdf } = await atVersion2(ID);
+      const addAvailableFiles = vi.fn(async () => undefined);
+      (globalThis as any).Zotero.Attachments = { addAvailableFiles };
+      expect(
+        row().querySelector<HTMLButtonElement>(".zinspire-ref-entry__pdf")!
+          .dataset.state,
+      ).toBe("find-pdf");
+      // Version 2 of 3
+      pdf().click();
+      expect(launch).toHaveBeenLastCalledWith(`https://arxiv.org/pdf/${ID}v2`);
+      expect(addAvailableFiles).not.toHaveBeenCalled();
+      // Back at the newest
+      const chooser = root.querySelector<HTMLSelectElement>(
+        ".arxiv-browser__detail .arxiv-browser__version",
+      )!;
+      chooser.value = "3";
+      chooser.dispatchEvent(new win.Event("change"));
+      await flushPromises();
+      expect(pdf()).toBeUndefined();
+      const find = [
+        ...root.querySelectorAll<HTMLButtonElement>(
+          ".arxiv-browser__detail-actions button",
+        ),
+      ].find((b) => b.textContent === msg("references-panel-pdf-find"))!;
+      find.click();
+      expect(addAvailableFiles).toHaveBeenCalledTimes(1);
+      expect(
+        (addAvailableFiles.mock.calls[0] as unknown as [{ id: number }[]])[0][0]
+          .id,
+      ).toBe(77);
+      expect(launch).toHaveBeenCalledTimes(1);
+    });
+
     it("knows the version of the PDFs the plugin attached by their title (they have no address)", async () => {
       const { items, pdf, launch, readerOpen } = await atVersion2(ID);
       attachPdf(items, 77, "", 6001, "arXiv preprint PDF v3");
@@ -3122,12 +4294,14 @@ describe("arXiv browser: adding and relating", () => {
     });
 
     it("opens for the newest version a library PDF of that version, else one of no known version, never one of another version", async () => {
-      const { root, items, pdf, launch, readerOpen, row } =
+      const { root, items, pdf, launch, readerOpen, row, view } =
         await atVersion2(ID);
       // Only version 2 in the library (arXiv's address, and one the plugin
       // attached, known by its title): arXiv's newest
       attachPdf(items, 77, `http://arxiv.org/pdf/${ID}v2`, 6001);
       attachPdf(items, 77, "", 6005, "arXiv preprint PDF v2");
+      // As Zotero's notifier makes it
+      view.listPane.refreshPdfButtons();
       const chooser = root.querySelector<HTMLSelectElement>(
         ".arxiv-browser__detail .arxiv-browser__version",
       )!;
@@ -4169,5 +5343,662 @@ describe("arXiv browser: searching arXiv", () => {
     expect(kept()).toEqual(["pion", "au:witten"]);
     // Not in the filter boxes' history
     expect(prefs[`${config.addonRef}.inspireFilterHistory`]).toBeUndefined();
+  });
+});
+
+describe("arXiv browser: Back and Forward", () => {
+  const PAGE_PAPER = "2502.20357";
+  const OUT = "hep-ph/0101001";
+  const result = (n: number) => ({
+    id: `2609.3${String(n).padStart(4, "0")}`,
+    version: 1,
+    title: `Result ${n}`,
+    abstract: `Abstract ${n}.`,
+    authors: ["A. Author"],
+    published: "2026-09-20T12:00:00Z",
+    updated: "2026-09-20T12:00:00Z",
+    primaryCategory: "hep-ph",
+    categories: ["hep-ph"],
+  });
+
+  /**
+   * The window on the hep-ph days, with pages (Zotero's elements; each
+   * page's session history as the test sets it, its first load arriving
+   * with the load) and a search that answers at once
+   */
+  async function navigating(
+    options: Record<string, unknown> = {},
+    subscriptions?: ArxivSubscription[],
+  ) {
+    const env = environment();
+    subscribe(["hep-ph"]);
+    if (subscriptions) {
+      prefs[`${PREFIX}.arxiv_subscriptions`] = JSON.stringify(subscriptions);
+    }
+    serveHepPh(env.site);
+    const doc = win.document as any;
+    doc.createXULElement = (tag: string) => {
+      const element = doc.createElement(tag);
+      element.openPopup = vi.fn();
+      if (tag === "browser") {
+        element.browsingContext = { sessionHistory: null };
+        element.goBack = vi.fn();
+        element.goForward = vi.fn();
+        element.reload = vi.fn();
+      }
+      if (tag === "findbar") {
+        element.hidden = true;
+        element.close = vi.fn(() => {
+          element.hidden = true;
+        });
+        element.onFindCommand = vi.fn();
+        element.onFindAgainCommand = vi.fn();
+      }
+      return element;
+    };
+    const messages = new Map<string, (message: unknown) => void>();
+    (win as any).messageManager = {
+      loadFrameScript: vi.fn(),
+      removeDelayedFrameScript: vi.fn(),
+      addMessageListener: (name: string, listener: () => void) =>
+        messages.set(name, listener),
+      removeMessageListener: (name: string) => messages.delete(name),
+    };
+    const load = vi.fn((browser: any) => {
+      browser.browsingContext.sessionHistory = { index: 0, count: 1 };
+    });
+    const searchArxiv = vi.fn(async () => ({
+      ok: true,
+      total: 3,
+      entries: [result(1), result(2), result(3)],
+    }));
+    const view = env.open({ loadHtmlPage: load, searchArxiv, ...options });
+    await env.settle();
+    // Oldest first: a paper with an HTML link is on the first page
+    const sort = select(env.root, "sort");
+    sort.value = "id-asc";
+    sort.dispatchEvent(new win.Event("change"));
+    const { root } = env;
+    const [backButton, forwardButton] = [
+      ...root.querySelectorAll<HTMLButtonElement>(
+        ".arxiv-browser__navigation button",
+      ),
+    ];
+    const pane = root.querySelector<HTMLElement>(".arxiv-browser__html-pane")!;
+    const detail = root.querySelector<HTMLElement>(".arxiv-browser__detail")!;
+    const page = () => root.querySelector("browser") as any;
+    const rowOf = (id: string) =>
+      rows(root).find((row) => row.dataset.entryId!.includes(id))!;
+    const openPage = (id: string) =>
+      rowOf(id)
+        .querySelector<HTMLButtonElement>(".arxiv-browser__html-button")!
+        .click();
+    const detailsButton = () =>
+      pane.querySelector<HTMLButtonElement>(".arxiv-browser__html-bar button")!;
+    /** What the page tells (arxivHtmlPlace), from the page shown */
+    const report = (data: Record<string, unknown>) =>
+      messages.get(PLACE_MESSAGE)!({ target: page(), data });
+    /** The page's own history moves to `index` of `count` */
+    const history = (index: number, count: number) => {
+      page().browsingContext.sessionHistory = { index, count };
+    };
+    const runSearch = async (text: string) => {
+      const input = root.querySelector<HTMLInputElement>(
+        ".arxiv-browser__search input",
+      )!;
+      input.focus();
+      input.value = text;
+      input.dispatchEvent(new win.Event("input"));
+      key(input, "Enter");
+      await flushPromises();
+    };
+    const focusedId = () => view.listPane.focused?.listing.id ?? null;
+    const shownTitle = () =>
+      detail.querySelector(".arxiv-browser__detail-title")?.textContent;
+    return {
+      ...env,
+      view,
+      load,
+      searchArxiv,
+      backButton,
+      forwardButton,
+      pane,
+      detail,
+      page,
+      rowOf,
+      openPage,
+      detailsButton,
+      report,
+      history,
+      runSearch,
+      focusedId,
+      shownTitle,
+    };
+  }
+
+  it("takes Zotero's reader's keys: Cmd+[ and Cmd+] on macOS, Alt+← and Alt+→ elsewhere", () => {
+    const keyOf = (
+      key: string,
+      mods: Partial<
+        Record<"altKey" | "ctrlKey" | "metaKey" | "shiftKey", boolean>
+      >,
+      mac: boolean,
+    ) =>
+      navigationKey(
+        {
+          key,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: false,
+          ...mods,
+        },
+        mac,
+      );
+    expect(keyOf("[", { metaKey: true }, true)).toBe("back");
+    expect(keyOf("]", { metaKey: true }, true)).toBe("forward");
+    // [ typed with Option (German keyboard)
+    expect(keyOf("[", { metaKey: true, altKey: true }, true)).toBe("back");
+    expect(keyOf("[", {}, true)).toBeNull();
+    expect(keyOf("ArrowLeft", { altKey: true }, true)).toBeNull();
+    expect(keyOf("ArrowLeft", { altKey: true }, false)).toBe("back");
+    expect(keyOf("ArrowRight", { altKey: true }, false)).toBe("forward");
+    expect(
+      keyOf("ArrowLeft", { altKey: true, shiftKey: true }, false),
+    ).toBeNull();
+    expect(
+      keyOf("ArrowLeft", { altKey: true, ctrlKey: true }, false),
+    ).toBeNull();
+    expect(keyOf("ArrowLeft", {}, false)).toBeNull();
+  });
+
+  it("does not let the search box's history hint take Alt+→", async () => {
+    const env = await navigating();
+    const { root, forwardButton, view } = env;
+    await env.runSearch("pion");
+    env.backButton.click();
+    expect(forwardButton.disabled).toBe(false);
+    const input = root.querySelector<HTMLInputElement>(
+      ".arxiv-browser__search input",
+    )!;
+    // "pi" typed: the history offers "pion"
+    input.focus();
+    input.value = "pi";
+    input.dispatchEvent(new win.Event("input"));
+    // (A keydown can be cancelled, as in Zotero: completion would cancel it)
+    key(input, "ArrowRight", { altKey: true, cancelable: true });
+    await flushPromises();
+    expect(view.search.active).toBe(true);
+    expect(view.search.query).toBe("pion");
+  });
+
+  it("goes Back with Alt+← also on the divider, which keeps its place", async () => {
+    const env = await navigating();
+    const { root, view } = env;
+    await env.runSearch("pion");
+    const list = root.querySelector<HTMLElement>(".arxiv-browser__list-pane")!;
+    const share = list.style.flex;
+    const divider = root.querySelector<HTMLElement>(".arxiv-browser__divider")!;
+    key(divider, "ArrowLeft", { altKey: true });
+    expect(list.style.flex).toBe(share);
+    expect(view.search.active).toBe(false);
+    // Without Alt the divider moves
+    key(divider, "ArrowLeft");
+    expect(list.style.flex).not.toBe(share);
+  });
+
+  it("has Back and Forward at the start of the toolbar, greyed while they lead nowhere", async () => {
+    const { root, backButton, forwardButton } = await navigating();
+    const bar = root.querySelector(
+      ".arxiv-browser__toolbar",
+    )!.firstElementChild!;
+    expect(bar.firstElementChild!.contains(backButton)).toBe(true);
+    expect(backButton.textContent).toBe("‹");
+    expect(forwardButton.textContent).toBe("›");
+    expect(backButton.title).toBe(msg("arxiv-browser-back", { key: "Alt+←" }));
+    expect(forwardButton.title).toBe(
+      msg("arxiv-browser-forward", { key: "Alt+→" }),
+    );
+    expect(backButton.disabled).toBe(true);
+    expect(forwardButton.disabled).toBe(true);
+  });
+
+  it("goes back from a search to the days where the reader was, and forward to the search again", async () => {
+    const env = await navigating();
+    const { root, view, backButton, forwardButton, searchArxiv } = env;
+    rows(root)[2].click();
+    const reading = env.focusedId();
+
+    await env.runSearch("pion");
+    expect(view.search.active).toBe(true);
+    expect(backButton.disabled).toBe(false);
+    rows(root)[1].click();
+    expect(env.focusedId()).toBe(result(2).id);
+
+    backButton.click();
+    expect(view.search.active).toBe(false);
+    expect(env.focusedId()).toBe(reading);
+    expect(forwardButton.disabled).toBe(false);
+    expect(
+      root.querySelector<HTMLInputElement>(".arxiv-browser__search input")!
+        .value,
+    ).toBe("");
+
+    // Forward by its key: the search's kept results, where the reader was
+    key(root, "ArrowRight", { altKey: true });
+    await flushPromises();
+    expect(view.search.active).toBe(true);
+    expect(view.search.query).toBe("pion");
+    expect(searchArxiv).toHaveBeenCalledTimes(1);
+    expect(env.focusedId()).toBe(result(2).id);
+    expect(forwardButton.disabled).toBe(true);
+
+    // Back by its key, also from the search box
+    key(
+      root.querySelector<HTMLInputElement>(".arxiv-browser__search input")!,
+      "ArrowLeft",
+      { altKey: true },
+    );
+    expect(view.search.active).toBe(false);
+    expect(env.focusedId()).toBe(reading);
+  });
+
+  it("records no place for moves within the list, nor for the same search again", async () => {
+    const env = await navigating();
+    const { root, backButton } = env;
+    rows(root)[0].click();
+    key(root, "j");
+    key(root, "n");
+    expect(backButton.disabled).toBe(true);
+    await env.runSearch("pion");
+    await env.runSearch("pion");
+    backButton.click();
+    expect(env.view.search.active).toBe(false);
+    expect(backButton.disabled).toBe(true);
+  });
+
+  it("goes back from a page to the details it was opened from, and forward to the page where the reader was", async () => {
+    const env = await navigating();
+    const { pane, detail, load, backButton, forwardButton } = env;
+    env.rowOf(PAGE_PAPER).click();
+    env.openPage(PAGE_PAPER);
+    expect(pane.hidden).toBe(false);
+    const first = env.page();
+    // The reader scrolled to a paragraph
+    env.report({
+      kind: "place",
+      page: `/html/${PAGE_PAPER}`,
+      href: `https://arxiv.org/html/${PAGE_PAPER}`,
+      id: "S2.p3",
+    });
+
+    backButton.click();
+    expect(pane.hidden).toBe(true);
+    expect(detail.hidden).toBe(false);
+    expect(env.focusedId()).toBe(PAGE_PAPER);
+    expect(env.page()).toBeNull();
+
+    forwardButton.click();
+    expect(pane.hidden).toBe(false);
+    // A new element, at the paragraph the reader had reached
+    expect(env.page()).not.toBe(first);
+    expect(load).toHaveBeenLastCalledWith(
+      env.page(),
+      `https://arxiv.org/html/${PAGE_PAPER}#S2.p3`,
+    );
+  });
+
+  it("goes back within the page first, within its own steps, then to the place before; a jump of the reader's drops what Forward had", async () => {
+    const env = await navigating();
+    const { backButton, forwardButton } = env;
+    env.rowOf(PAGE_PAPER).click();
+    env.openPage(PAGE_PAPER);
+    // Two jumps in the page (citations)
+    env.history(2, 3);
+    env.report({
+      kind: "move",
+      page: `/html/${PAGE_PAPER}`,
+      href: `https://arxiv.org/html/${PAGE_PAPER}#bib.bib4`,
+    });
+    backButton.click();
+    expect(env.page().goBack).toHaveBeenCalledWith(false);
+    expect(env.pane.hidden).toBe(false);
+    // The page went back: Forward leads forward in it
+    env.history(1, 3);
+    env.report({
+      kind: "move",
+      page: `/html/${PAGE_PAPER}`,
+      href: `https://arxiv.org/html/${PAGE_PAPER}#S1`,
+    });
+    expect(forwardButton.disabled).toBe(false);
+    key(env.root, "ArrowRight", { altKey: true });
+    expect(env.page().goForward).toHaveBeenCalledWith(false);
+    env.history(2, 3);
+    env.report({
+      kind: "move",
+      page: `/html/${PAGE_PAPER}`,
+      href: "https://arxiv.org/html/x",
+    });
+
+    env.history(0, 3);
+    backButton.click();
+    // At the page's start: the place before (the details)
+    expect(env.page()).toBeNull();
+    expect(forwardButton.disabled).toBe(false);
+    forwardButton.click();
+    expect(env.page()).not.toBeNull();
+  });
+
+  it("drops the places after this one when the reader jumps in the page", async () => {
+    const env = await navigating();
+    const { backButton, forwardButton } = env;
+    env.rowOf(PAGE_PAPER).click();
+    env.openPage(PAGE_PAPER);
+    // A search while the page is shown, then back to the page's place
+    await env.runSearch("pion");
+    backButton.click();
+    expect(env.view.search.active).toBe(false);
+    expect(forwardButton.disabled).toBe(false);
+    // The reader follows a citation in the page (not the window's step)
+    env.history(1, 2);
+    env.report({
+      kind: "move",
+      page: `/html/${PAGE_PAPER}`,
+      href: `https://arxiv.org/html/${PAGE_PAPER}#bib.bib4`,
+    });
+    expect(forwardButton.disabled).toBe(true);
+    // Back undoes the jump in the page
+    backButton.click();
+    expect(env.page().goBack).toHaveBeenCalledWith(false);
+  });
+
+  it("goes back to other days as they were listed, and to the reader's place once they have come", async () => {
+    const env = await navigating();
+    const { root, view, backButton, forwardButton } = env;
+    const dayButton = () =>
+      root.querySelector<HTMLButtonElement>(".arxiv-browser__days-button")!;
+    const picker = () =>
+      root.querySelector<HTMLElement>(".arxiv-browser__daypicker")!;
+    rows(root)[3].click();
+    const reading = env.focusedId();
+    dayButton().click();
+    picker()
+      .querySelector(`[data-date="2026-09-23"]`)!
+      .dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+    [...picker().querySelectorAll<HTMLButtonElement>("button")]
+      .find((b) => b.textContent === msg("arxiv-browser-days-load"))!
+      .click();
+    await env.settle();
+    expect(view.loader.days.map((day) => day.date)).toEqual(["2026-09-23"]);
+
+    backButton.click();
+    // The newest day as it was then: its date, from the cache
+    expect(view.days).toEqual({ kind: "days", dates: ["2026-09-25"] });
+    expect(env.focusedId()).toBeNull();
+    await env.settle();
+    expect(view.loader.days.map((day) => day.date)).toEqual(["2026-09-25"]);
+    expect(env.focusedId()).toBe(reading);
+
+    forwardButton.click();
+    await env.settle();
+    expect(view.loader.days.map((day) => day.date)).toEqual(["2026-09-23"]);
+  });
+
+  it("closes a page when the reader moves to another paper in the list: one place, and Back opens the page again", async () => {
+    const env = await navigating();
+    const { root, backButton } = env;
+    env.rowOf(PAGE_PAPER).click();
+    env.openPage(PAGE_PAPER);
+    const row = rows(root).findIndex(
+      (element) => element === env.rowOf(PAGE_PAPER),
+    );
+    rows(root)[row + 1].click();
+    expect(env.page()).toBeNull();
+    const moved = env.focusedId();
+    key(root, "j");
+
+    backButton.click();
+    // The page again, the list's focus as it was before the move
+    expect(env.page()).not.toBeNull();
+    expect(env.focusedId()).toBe(PAGE_PAPER);
+    expect(moved).not.toBe(PAGE_PAPER);
+  });
+
+  it('makes "‹ Details" Back when the page came from those details: Forward leads to the page again', async () => {
+    const env = await navigating();
+    const { forwardButton } = env;
+    env.rowOf(PAGE_PAPER).click();
+    env.openPage(PAGE_PAPER);
+    env.history(1, 2);
+    env.detailsButton().click();
+    // Straight to the details, not through the page's own steps
+    expect(env.page()).toBeNull();
+    expect(env.focusedId()).toBe(PAGE_PAPER);
+    expect(forwardButton.disabled).toBe(false);
+    forwardButton.click();
+    expect(env.page()).not.toBeNull();
+  });
+
+  it('shows a page asked for from outside as a place; its "‹ Details" is a place too', async () => {
+    const apiVersion = vi.fn(async () => ({
+      ok: true,
+      entry: { ...result(9), id: OUT, title: "Quantum Weakdynamics" },
+    }));
+    const env = await navigating({ apiVersion });
+    const { root, backButton } = env;
+    rows(root)[0].click();
+    const reading = env.focusedId();
+    env.view.showHtml({ id: OUT });
+    expect(backButton.disabled).toBe(false);
+    env.detailsButton().click();
+    await flushPromises();
+    expect(env.shownTitle()).toBe("Quantum Weakdynamics");
+
+    backButton.click();
+    // The page again
+    expect(env.page()).not.toBeNull();
+    backButton.click();
+    // The details before it
+    expect(env.page()).toBeNull();
+    expect(env.focusedId()).toBe(reading);
+  });
+
+  it("keeps a page shown while the list changes: Back steps in the page only within each place's steps", async () => {
+    const env = await navigating();
+    const { view, backButton } = env;
+    env.rowOf(PAGE_PAPER).click();
+    env.openPage(PAGE_PAPER);
+    env.history(1, 2);
+    await env.runSearch("pion");
+    // The page stays; the search's place begins at entry 1 of it
+    expect(env.page()).not.toBeNull();
+    env.history(2, 3);
+    backButton.click();
+    expect(env.page().goBack).toHaveBeenCalledTimes(1);
+    env.history(1, 3);
+    backButton.click();
+    // At the search's start in the page: the days again, the page still shown
+    expect(env.page().goBack).toHaveBeenCalledTimes(1);
+    expect(view.search.active).toBe(false);
+    expect(env.page()).not.toBeNull();
+  });
+
+  it("loads the page asked for again in its place, recording nothing", async () => {
+    const env = await navigating();
+    env.rowOf(PAGE_PAPER).click();
+    env.openPage(PAGE_PAPER);
+    const shown = env.page();
+    env.page().dispatchEvent(new win.Event("pagetitlechanged"));
+    env.view.showHtml({ id: PAGE_PAPER });
+    expect(env.page()).toBe(shown);
+    expect(shown.reload).toHaveBeenCalledTimes(1);
+    expect(env.load).toHaveBeenCalledTimes(1);
+    env.backButton.click();
+    expect(env.page()).toBeNull();
+    expect(env.backButton.disabled).toBe(true);
+  });
+
+  it("goes back and forth between places of one search, the reader's place each time", async () => {
+    const env = await navigating();
+    const { root } = env;
+    await env.runSearch("pion");
+    rows(root)[0].click();
+    // The first result's page, from the detail pane
+    root
+      .querySelector<HTMLButtonElement>(
+        ".arxiv-browser__detail-actions .arxiv-browser__split button",
+      )!
+      .click();
+    expect(env.page()).not.toBeNull();
+    // The next result: the page closes (a place)
+    rows(root)[1].click();
+    expect(env.page()).toBeNull();
+    env.backButton.click();
+    expect(env.page()).not.toBeNull();
+    expect(env.focusedId()).toBe(result(1).id);
+    // Back to the first result's details
+    env.detailsButton().click();
+    expect(env.page()).toBeNull();
+    expect(env.focusedId()).toBe(result(1).id);
+    expect(env.shownTitle()).toBe("Result 1");
+  });
+
+  it("records clearing the search as a place", async () => {
+    const env = await navigating();
+    const { root, view } = env;
+    await env.runSearch("pion");
+    root
+      .querySelector<HTMLButtonElement>(".arxiv-browser__search-clear")!
+      .click();
+    expect(view.search.active).toBe(false);
+    env.backButton.click();
+    expect(view.search.active).toBe(true);
+    expect(view.search.query).toBe("pion");
+    env.forwardButton.click();
+    expect(view.search.active).toBe(false);
+  });
+
+  it("goes back to another subscription's days, loading them once, and passes over a subscription deleted since", async () => {
+    const sections = { new: true, cross: true, replace: true };
+    const env = await navigating({}, [
+      { id: "sub-1", name: "Daily", categories: ["hep-ph"], sections },
+      { id: "sub-2", name: "Other", categories: ["hep-ph"], sections },
+    ]);
+    const { root, view, backButton } = env;
+    const subscription = select(root, "subscription");
+    subscription.value = "sub-2";
+    subscription.dispatchEvent(new win.Event("change"));
+    await env.settle();
+    expect(backButton.disabled).toBe(false);
+
+    const runs = view.loader.runNumber;
+    backButton.click();
+    await env.settle();
+    expect(subscription.value).toBe("sub-1");
+    expect(view.loader.runNumber).toBe(runs + 1);
+
+    // Forward to Other, a search, Other deleted (Daily is loaded: a place)
+    env.forwardButton.click();
+    await env.settle();
+    await env.runSearch("pion");
+    [
+      ...root.querySelectorAll<HTMLButtonElement>(
+        ".arxiv-browser__toolbar button",
+      ),
+    ]
+      .find(
+        (button) =>
+          button.textContent === msg("arxiv-browser-subscription-delete"),
+      )!
+      .click();
+    await env.settle();
+    expect(subscription.value).toBe("sub-1");
+    // Back: the search; Back again passes over Other's place to Daily's
+    backButton.click();
+    expect(view.search.active).toBe(true);
+    backButton.click();
+    await env.settle();
+    expect(view.search.active).toBe(false);
+    expect(subscription.value).toBe("sub-1");
+    expect(backButton.disabled).toBe(true);
+  });
+
+  it("keeps the paper's page shown when Forward reaches a place that shared it before it was closed", async () => {
+    const env = await navigating();
+    const { backButton, forwardButton, load } = env;
+    env.rowOf(PAGE_PAPER).click();
+    env.openPage(PAGE_PAPER);
+    // A search while reading: the page stays, a place that shares it
+    await env.runSearch("pion");
+    backButton.click();
+    backButton.click();
+    expect(env.page()).toBeNull();
+    // The page again, in a new element; then on to the search
+    forwardButton.click();
+    const reopened = env.page();
+    // Its page has arrived
+    reopened.dispatchEvent(new win.Event("pagetitlechanged"));
+    const loads = load.mock.calls.length;
+    forwardButton.click();
+    expect(env.view.search.active).toBe(true);
+    expect(env.page()).toBe(reopened);
+    expect(load).toHaveBeenCalledTimes(loads);
+    expect(reopened.reload).not.toHaveBeenCalled();
+  });
+
+  it('leaves no "Fetching…" behind when Back leaves a paper\'s details before its record came', async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    const apiVersion = vi.fn(
+      () => new Promise((resolve) => (answer = resolve)),
+    );
+    const env = await navigating({ apiVersion });
+    const { detail, backButton } = env;
+    env.view.showHtml({ id: OUT });
+    env.detailsButton().click();
+    expect(detail.textContent).toBe(
+      msg("arxiv-browser-detail-fetching", { id: `arXiv:${OUT}` }),
+    );
+    backButton.click();
+    expect(env.page()).not.toBeNull();
+    backButton.click();
+    expect(env.page()).toBeNull();
+    expect(detail.textContent).toBe(msg("arxiv-browser-detail-empty"));
+    answer({
+      ok: true,
+      entry: { ...result(9), id: OUT, title: "Quantum Weakdynamics" },
+    });
+    await flushPromises();
+    expect(detail.textContent).toBe(msg("arxiv-browser-detail-empty"));
+  });
+
+  it("takes the reader's place only at the paper's own site", async () => {
+    const env = await navigating();
+    env.rowOf(PAGE_PAPER).click();
+    env.openPage(PAGE_PAPER);
+    env.report({
+      kind: "place",
+      page: `/html/${PAGE_PAPER}`,
+      href: `https://elsewhere.example/html/${PAGE_PAPER}`,
+      id: "S3",
+    });
+    env.backButton.click();
+    env.forwardButton.click();
+    expect(env.load).toHaveBeenLastCalledWith(
+      env.page(),
+      `https://arxiv.org/html/${PAGE_PAPER}`,
+    );
+  });
+
+  it("gives each paper's page its own element, the find bar staying", async () => {
+    const env = await navigating();
+    env.rowOf(PAGE_PAPER).click();
+    env.openPage(PAGE_PAPER);
+    const first = env.page();
+    const findBar = env.root.querySelector("findbar");
+    env.view.showHtml({ id: OUT });
+    expect(env.page()).not.toBe(first);
+    expect(first.isConnected).toBe(false);
+    expect(env.root.querySelector("findbar")).toBe(findBar);
+    expect((findBar as any).browser).toBe(env.page());
   });
 });

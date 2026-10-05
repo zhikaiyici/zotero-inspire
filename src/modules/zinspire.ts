@@ -11,7 +11,7 @@ import { literatureSearchHistory } from "./inspire/searchHistory";
 import { FilterHistoryInput } from "./inspire/panel/FilterHistoryInput";
 import { QuickFiltersControl } from "./inspire/panel/QuickFiltersControl";
 import { setQuickFilter } from "./inspire/filters";
-import { cleanMathTitle } from "../utils/mathTitle";
+import { cleanMathTitle, renderSupSubText } from "../utils/mathTitle";
 import { getJournalAbbreviations } from "../utils/journalAbbreviations";
 import { getLocaleID, getString } from "../utils/locale";
 import type { FluentMessageId } from "../../typings/i10n";
@@ -61,8 +61,6 @@ import {
   // Constants
   INSPIRE_API_BASE,
   INSPIRE_LITERATURE_URL,
-  ARXIV_ABS_URL,
-  DOI_ORG_URL,
   CROSSREF_API_URL,
   CITED_BY_PAGE_SIZE,
   CITED_BY_MAX_PAGES,
@@ -165,7 +163,6 @@ import {
   buildEntrySearchText,
   splitPublicationInfo,
   getPublicationNoteLabel,
-  formatPublicationInfo,
   buildPublicationSummary,
   normalizeArxivID,
   normalizeArxivCategories,
@@ -264,7 +261,21 @@ import {
 import { createItemFromInspireMeta } from "./inspire/library/itemCreation";
 import { onLibraryIndexChange } from "./inspire/library/arxivIndex";
 import { loadedItem, refreshLocalState } from "./inspire/library/localStatus";
-import { firstPdfAttachmentID, openLocalPdf } from "./inspire/library/localPdf";
+import {
+  findFullText,
+  firstPdfAttachmentID,
+  openAttachment,
+  openLocalPdf,
+  showFullTextSearch,
+} from "./inspire/library/localPdf";
+import {
+  htmlSnapshotAmong,
+  htmlSnapshotVersion,
+  saveArxivHtmlVersion,
+} from "./arxiv/arxivHtmlSnapshot";
+import { htmlSaveText } from "./arxiv/browser/browserText";
+import { openArxivBrowser } from "./arxiv/browser/browserWindow";
+import { showMenu } from "./arxiv/browser/dom";
 import { linkItems, unlinkItems } from "./inspire/library/relatedItems";
 import { pickSaveTarget, rememberSaveTarget } from "./saveTargets";
 import { applyLocalMarker } from "./inspire/panel/localMarker";
@@ -545,6 +556,11 @@ export class ZInspireReferencePane {
   private static mainToolbarGraphButtonCleanup?: () => void;
   private static mainToolbarGraphDialog?: CitationGraphDialog;
 
+  /** The ID Zotero gave the registered section */
+  static get paneID(): string | undefined {
+    return this.registrationKey || undefined;
+  }
+
   static buildCitationGraphIconSvg(isDark: boolean): string {
     const green = isDark ? "#059669" : "#10b981";
     const purple = isDark ? "#7c3aed" : "#8b5cf6";
@@ -579,12 +595,12 @@ export class ZInspireReferencePane {
       paneID: "zoteroinspire-references",
       pluginID: config.addonID,
       header: {
-        l10nID: "pane-item-references-header",
+        l10nID: getLocaleID("pane-item-references-header"),
         icon: headerIcon,
         darkIcon: headerIcon,
       },
       sidenav: {
-        l10nID: "pane-item-references-sidenav",
+        l10nID: getLocaleID("pane-item-references-sidenav"),
         icon: sidenavIcon,
         darkIcon: sidenavIcon,
       },
@@ -658,7 +674,7 @@ export class ZInspireReferencePane {
           // FIX-WINDOWS-REFRESH-BUTTON: Use custom type and local icon
           type: "zinspire-refresh",
           icon: `chrome://${config.addonRef}/content/icons/refresh.svg`,
-          l10nID: "zoteroinspire-refresh-button",
+          l10nID: getLocaleID("pane-item-references-refresh"),
           onClick: ({ body }: { body: HTMLDivElement }) => {
             try {
               const controller = this.controllers.get(body);
@@ -671,7 +687,7 @@ export class ZInspireReferencePane {
         {
           type: "zinspire-export",
           icon: `chrome://${config.addonRef}/content/icons/clipboard.svg`,
-          l10nID: "zoteroinspire-copy-all-button",
+          l10nID: getLocaleID("pane-item-references-copy-all"),
           onClick: ({
             body,
             event,
@@ -1434,6 +1450,8 @@ export class ZInspireReferencePane {
 }
 
 export class InspireReferencePanelController {
+  /** arXiv identifiers of the papers whose HTML version is being saved */
+  private static savingArxivHtml = new Set<string>();
   private static get PANEL_LAYOUT_DEBUG(): boolean {
     return getPref("debug_panel_layout") === true;
   }
@@ -2364,6 +2382,10 @@ export class InspireReferencePanelController {
     this.entryRenderer = new EntryListRenderer({
       document: this.listEl.ownerDocument,
       maxPoolSize: this.maxRowPoolSize,
+      adapter: {
+        arxivHtmlSaved: (entry, id) =>
+          this.arxivHtmlSnapshotOf(entry, id) !== null,
+      },
     });
 
     // Phase 0.4 Refactor: Initialize HoverPreviewController for preview card
@@ -5346,7 +5368,7 @@ export class InspireReferencePanelController {
     // Try to find the sidenav button for our section
     // The button should be in item-pane-sidenav or similar container
     const sidenavButton = doc.querySelector(
-      `[data-pane="${paneID}"], [data-l10n-id="pane-item-references-sidenav"]`,
+      `[data-pane="${paneID}"], [data-l10n-id="${getLocaleID("pane-item-references-sidenav")}"]`,
     ) as HTMLElement | null;
 
     if (sidenavButton) {
@@ -5911,6 +5933,16 @@ export class InspireReferencePanelController {
         return;
       }
 
+      // "HTML" after the arXiv number: the menu of arXiv's HTML version
+      if (target.closest(".zinspire-ref-entry__html")) {
+        event.preventDefault();
+        this.showArxivHtmlMenu(
+          entry,
+          target.closest(".zinspire-ref-entry__html") as HTMLElement,
+        );
+        return;
+      }
+
       // Link button click (link/unlink reference)
       if (target.closest(".zinspire-ref-entry__link")) {
         event.preventDefault();
@@ -6033,6 +6065,9 @@ export class InspireReferencePanelController {
         ".zinspire-ref-entry__title-link",
       ) as HTMLElement | null;
       if (titleLink && entry) {
+        // From the title's text onto one of its sub/superscripts or back:
+        // the pointer has not left the title
+        if (titleLink.contains(event.relatedTarget as Node | null)) return;
         this.scheduleAbstractTooltip(entry, titleLink);
         return;
       }
@@ -6077,6 +6112,8 @@ export class InspireReferencePanelController {
       // Title link mouseout - hide tooltip
       const titleLink = target.closest(".zinspire-ref-entry__title-link");
       if (titleLink) {
+        // Still within the title (see the mouseover handler)
+        if (titleLink.contains(event.relatedTarget as Node | null)) return;
         this.handleTitleMouseLeave(event);
         return;
       }
@@ -8069,12 +8106,25 @@ export class InspireReferencePanelController {
         continue;
       }
 
-      // PDF attachment added: refresh PDF button state for entries pointing to its parent item.
-      // This covers PDFs added outside the panel (or with delayed notifier timing).
+      // An attachment added: refresh the buttons of the papers of its parent item
       const parentItemID = (item as any)?.parentItemID as number | undefined;
       if (typeof parentItemID !== "number" || parentItemID <= 0) {
         continue;
       }
+      // A snapshot of arXiv's HTML version (saved from the arXiv window, or
+      // from another list): its papers' "HTML" turns green
+      if (item.attachmentContentType === "text/html") {
+        for (const entry of this.allEntries) {
+          if (!this.itemsOfPaper(entry).includes(parentItemID)) continue;
+          const id = formatArxivDetails(entry.arxivDetails)?.id;
+          if (id && htmlSnapshotVersion(item, id) !== null) {
+            this.redrawArxivHtml(entry);
+          }
+        }
+        continue;
+      }
+      // PDF attachment added: refresh PDF button state for entries pointing to its parent item.
+      // This covers PDFs added outside the panel (or with delayed notifier timing).
       if (!item.isPDFAttachment?.()) {
         continue;
       }
@@ -11412,6 +11462,9 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
         renderPdfButtonIcon(doc, pdfButton, PdfButtonState.DISABLED);
       }
     }
+
+    // "HTML": green once a snapshot is saved among the paper's items
+    this.entryRenderer?.updateArxivHtml(row, entry);
   }
 
   /**
@@ -11454,23 +11507,12 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
       ".zinspire-ref-entry__title-link",
     ) as HTMLAnchorElement;
     if (titleLink) {
-      titleLink.textContent = entry.title + ";";
+      renderSupSubText(titleLink, entry.title + ";");
       titleLink.href = entry.inspireUrl || entry.fallbackUrl || "#";
     }
 
     // Update meta with clickable links (DOI/arXiv) - PERF-13: rebuild content
-    const meta = row.querySelector(".zinspire-ref-entry__meta") as HTMLElement;
-    if (meta) {
-      const hasMeta = entry.publicationInfo || entry.arxivDetails || entry.doi;
-      if (hasMeta) {
-        this.buildMetaContent(meta, entry);
-        meta.style.display = "";
-      } else {
-        // PERF-FIX-15: Use replaceChildren() instead of innerHTML
-        meta.replaceChildren();
-        meta.style.display = "none";
-      }
-    }
+    this.entryRenderer?.updateMeta(row, entry);
 
     // Update stats button (show/hide) - PERF-13: use existing element
     const statsButton = row.querySelector(
@@ -14255,134 +14297,6 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
   }
 
   /**
-   * Create a clickable external link element.
-   * Shared helper for title links, DOI links, arXiv links, etc.
-   * - Blue color, underline on hover
-   * - Left click opens in browser via Zotero.launchURL()
-   * - Right click shows context menu (handled by event delegation)
-   */
-  private createExternalLink(
-    doc: Document,
-    text: string,
-    url: string,
-  ): HTMLAnchorElement {
-    const link = doc.createElement("a");
-    link.href = url;
-    link.textContent = text;
-    applyMetaLinkStyle(link, isDarkMode());
-    // Hover underline
-    link.addEventListener("mouseenter", () => {
-      link.style.textDecoration = "underline";
-    });
-    link.addEventListener("mouseleave", () => {
-      link.style.textDecoration = "none";
-    });
-    // Left click opens in browser (Zotero doesn't support target="_blank")
-    link.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      Zotero.launchURL(url);
-    });
-    return link;
-  }
-
-  /**
-   * Build meta content with clickable links for DOI and arXiv.
-   * - Journal info links to DOI if available
-   * - arXiv tag links to arXiv abstract page
-   * - Erratum info also links to its DOI if available
-   */
-  private buildMetaContent(
-    container: HTMLElement,
-    entry: InspireReferenceEntry,
-  ): void {
-    const doc = this.listEl.ownerDocument;
-    // PERF-FIX-15: Use replaceChildren() instead of innerHTML = ""
-    container.replaceChildren();
-
-    // Build journal info part
-    const journalText = formatPublicationInfo(
-      entry.publicationInfo,
-      entry.year,
-    );
-    if (journalText) {
-      if (entry.doi) {
-        const doiUrl = `${DOI_ORG_URL}/${entry.doi}`;
-        container.appendChild(
-          this.createExternalLink(doc, journalText, doiUrl),
-        );
-      } else {
-        const journalSpan = doc.createElement("span");
-        journalSpan.textContent = journalText;
-        container.appendChild(journalSpan);
-      }
-    }
-
-    // Build arXiv part
-    const arxivDetails = formatArxivDetails(entry.arxivDetails);
-    if (arxivDetails?.id) {
-      if (journalText) {
-        // Add space separator
-        const space = doc.createElement("span");
-        space.textContent = " ";
-        container.appendChild(space);
-      }
-      const arxivUrl = `${ARXIV_ABS_URL}/${arxivDetails.id}`;
-      const arxivText = `[arXiv:${arxivDetails.id}]`;
-      container.appendChild(this.createExternalLink(doc, arxivText, arxivUrl));
-    }
-
-    // Build erratum part
-    if (entry.publicationInfoErrata?.length) {
-      const errataSummaries: string[] = [];
-      for (const errataEntry of entry.publicationInfoErrata) {
-        const text = formatPublicationInfo(errataEntry.info, entry.year, {
-          omitJournal: true,
-        });
-        if (text) {
-          errataSummaries.push(`${errataEntry.label}: ${text}`);
-        }
-      }
-      if (errataSummaries.length) {
-        // Add space before erratum bracket
-        const space = doc.createElement("span");
-        space.textContent = " [";
-        container.appendChild(space);
-
-        for (let i = 0; i < entry.publicationInfoErrata.length; i++) {
-          const errataEntry = entry.publicationInfoErrata[i];
-          const text = formatPublicationInfo(errataEntry.info, entry.year, {
-            omitJournal: true,
-          });
-          if (!text) continue;
-
-          if (i > 0) {
-            const sep = doc.createElement("span");
-            sep.textContent = "; ";
-            container.appendChild(sep);
-          }
-
-          const labelText = `${errataEntry.label}: ${text}`;
-          if (errataEntry.doi) {
-            const errataUrl = `${DOI_ORG_URL}/${errataEntry.doi}`;
-            container.appendChild(
-              this.createExternalLink(doc, labelText, errataUrl),
-            );
-          } else {
-            const errataSpan = doc.createElement("span");
-            errataSpan.textContent = labelText;
-            container.appendChild(errataSpan);
-          }
-        }
-
-        const closeBracket = doc.createElement("span");
-        closeBracket.textContent = "]";
-        container.appendChild(closeBracket);
-      }
-    }
-  }
-
-  /**
    * Show a context menu for link with copy option.
    * FTR-COPY-LINK: Right-click on any link to copy its URL.
    */
@@ -14750,101 +14664,6 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
    */
   private getFirstPdfAttachmentID(parentItemID: number): number | null {
     return firstPdfAttachmentID(parentItemID);
-  }
-
-  private async waitForFirstPdfAttachmentID(
-    parentItemID: number,
-    options: { timeoutMs?: number; intervalMs?: number } = {},
-  ): Promise<number | null> {
-    const timeoutMs =
-      typeof options.timeoutMs === "number" && options.timeoutMs > 0
-        ? options.timeoutMs
-        : 4000;
-    const intervalMs =
-      typeof options.intervalMs === "number" && options.intervalMs > 0
-        ? options.intervalMs
-        : 200;
-
-    const deadline = Date.now() + timeoutMs;
-    let pdfID = this.getFirstPdfAttachmentID(parentItemID);
-    while (!pdfID && Date.now() < deadline) {
-      await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
-      pdfID = this.getFirstPdfAttachmentID(parentItemID);
-    }
-    return pdfID;
-  }
-
-  private async notifyItemModifiedForUI(
-    parentItemID: number,
-    attachmentItemID?: number,
-  ): Promise<void> {
-    const mainWin = Zotero.getMainWindow?.() as any;
-    const notifier: any = mainWin?.Zotero?.Notifier || (Zotero.Notifier as any);
-
-    // Prime best-attachment cache so the main items view (hasAttachment column) can show the icon
-    // without waiting for the delayed itemTree cell refresh.
-    try {
-      const Z: any = mainWin?.Zotero || Zotero;
-      const parentItem =
-        typeof Z.Items?.get === "function"
-          ? Z.Items.get(parentItemID)
-          : Zotero.Items.get(parentItemID);
-      await parentItem?.getBestAttachmentState?.();
-    } catch {
-      // ignore
-    }
-
-    // Prefer Zotero.Notifier.trigger(..., force=true) to avoid being queued in an open transaction.
-    try {
-      if (typeof notifier?.trigger === "function") {
-        if (attachmentItemID) {
-          // Update attachments box rows without selecting anything (avoid "add" side effects)
-          await notifier.trigger(
-            "refresh",
-            "item",
-            [attachmentItemID],
-            {},
-            true,
-          );
-        }
-        // Ensure itemTree re-renders the row, so the hasAttachment cell schedules
-        // (or immediately reflects) bestAttachmentState updates.
-        await notifier.trigger("refresh", "item", [parentItemID], {}, true);
-        await notifier.trigger("modify", "item", [parentItemID], {}, true);
-        await notifier.trigger("redraw", "item", [parentItemID], {}, true);
-      } else if (typeof notifier?.notify === "function") {
-        if (attachmentItemID) {
-          notifier.notify("refresh", "item", [attachmentItemID], {}, true);
-        }
-        notifier.notify("refresh", "item", [parentItemID], {}, true);
-        notifier.notify("modify", "item", [parentItemID], {}, true);
-        notifier.notify("redraw", "item", [parentItemID], {}, true);
-      }
-    } catch {
-      // ignore
-    }
-
-    // Best-effort UI refresh fallback (some Zotero builds cache attachment state in views).
-    try {
-      const pane: any =
-        Zotero.getActiveZoteroPane?.() ||
-        mainWin?.ZoteroPane ||
-        (globalThis as any).ZoteroPane;
-
-      if (attachmentItemID && typeof pane?.itemsView?.notify === "function") {
-        await pane.itemsView.notify("refresh", "item", [attachmentItemID], {});
-      }
-      if (typeof pane?.itemsView?.notify === "function") {
-        await pane.itemsView.notify("refresh", "item", [parentItemID], {});
-        await pane.itemsView.notify("modify", "item", [parentItemID], {});
-        await pane.itemsView.notify("redraw", "item", [parentItemID], {});
-      }
-
-      pane?.itemPane?.refresh?.();
-      pane?.itemsView?.invalidate?.();
-    } catch {
-      // ignore
-    }
   }
 
   /**
@@ -16748,23 +16567,24 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
     }
   }
 
+  /** Add the paper to the library where the user chooses: its new item */
   private async handleAddAction(
     entry: InspireReferenceEntry,
     anchor: HTMLElement,
-  ) {
+  ): Promise<Zotero.Item | null> {
     if (entry.localItemID) {
-      return;
+      return null;
     }
     if (!entry.recid) {
       this.showToast(getString("references-panel-toast-missing"));
-      return;
+      return null;
     }
     if (!(await this.confirmNotInLibrary(entry))) {
-      return;
+      return null;
     }
     const selection = await this.promptForSaveTarget(anchor);
     if (!selection) {
-      return;
+      return null;
     }
     const newItem = await this.importReference(entry.recid, selection);
     if (newItem) {
@@ -16789,6 +16609,94 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
       // ISSUE-110: optionally fetch the PDF right after adding (opt-in pref).
       void this.maybeAutoFindFullText(entry, newItem);
     }
+    return newItem ?? null;
+  }
+
+  /**
+   * The menu of arXiv's HTML version of the paper, as in the arXiv browser:
+   * show it there, save it as a snapshot, and open the snapshot when saved
+   */
+  private showArxivHtmlMenu(
+    entry: InspireReferenceEntry,
+    anchor: HTMLElement,
+  ): void {
+    const id = formatArxivDetails(entry.arxivDetails)?.id;
+    if (!id) return;
+    const snapshotID = this.arxivHtmlSnapshotOf(entry, id);
+    showMenu(anchor, [
+      {
+        label: getString("references-panel-arxiv-html-show"),
+        run: () => openArxivBrowser({ id, title: entry.title }),
+      },
+      {
+        label: getString("arxiv-browser-html-menu-save"),
+        run: () =>
+          void this.saveArxivHtml(entry, id, anchor).catch((err) =>
+            Zotero.debug(
+              `[${config.addonName}] saveArxivHtml failed\n${(err as Error)?.stack ?? err}`,
+            ),
+          ),
+      },
+      ...(snapshotID === null
+        ? []
+        : [
+            {
+              label: getString("arxiv-browser-html-menu-open"),
+              run: () => void openAttachment(snapshotID),
+            },
+          ]),
+    ]);
+  }
+
+  /** Draw the paper's "HTML" again in its row, if one shows the paper */
+  private redrawArxivHtml(entry: InspireReferenceEntry): void {
+    const row = this.rowShowing(entry, this.rowCache.get(entry.id));
+    if (row) this.entryRenderer?.updateArxivHtml(row, entry);
+  }
+
+  /** A saved snapshot of the paper's HTML version among its items, or null */
+  private arxivHtmlSnapshotOf(
+    entry: InspireReferenceEntry,
+    id: string,
+  ): number | null {
+    return htmlSnapshotAmong(this.itemsOfPaper(entry), id);
+  }
+
+  /** The library items of the paper */
+  private itemsOfPaper(entry: InspireReferenceEntry): number[] {
+    return entry.localItemIDs ?? (entry.localItemID ? [entry.localItemID] : []);
+  }
+
+  /**
+   * Save arXiv's HTML version (the newest) of the paper as a snapshot of its
+   * (first) item; a paper not in the library is added first, where the user
+   * chooses
+   */
+  private async saveArxivHtml(
+    entry: InspireReferenceEntry,
+    id: string,
+    anchor: HTMLElement,
+  ): Promise<void> {
+    // One save at a time per paper
+    if (InspireReferencePanelController.savingArxivHtml.has(id)) return;
+    InspireReferencePanelController.savingArxivHtml.add(id);
+    try {
+      // Added, or found in the library when it was to be added
+      const item =
+        (!entry.localItemID && (await this.handleAddAction(entry, anchor))) ||
+        (entry.localItemID ? loadedItem(entry.localItemID) : null);
+      if (!item) return;
+      const progress = popupReporter.startProgress(
+        getString("arxiv-browser-html-saving", { args: { id } }),
+      );
+      const outcome = await saveArxivHtmlVersion(item, id, undefined);
+      progress.close();
+      this.showToast(htmlSaveText(id, outcome));
+      // "HTML" turns green (also when it was saved before from elsewhere)
+      if (outcome.status !== "failed") this.redrawArxivHtml(entry);
+    } finally {
+      InspireReferencePanelController.savingArxivHtml.delete(id);
+    }
   }
 
   /**
@@ -16806,22 +16714,9 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
       if (getPref("auto_find_fulltext_on_import") !== true) {
         return;
       }
-      // Mirror the manual Find Full Text panel button: run in the main-window
-      // Zotero context, then poll for the attachment and refresh the panel row.
-      const mainWin = Zotero.getMainWindow?.() as any;
-      const Z: any = mainWin?.Zotero || Zotero;
-      const target =
-        (typeof Z.Items?.get === "function" ? Z.Items.get(item.id) : null) ||
-        item;
-      const attachmentsAPI: any = Z.Attachments || Zotero.Attachments;
-      if (!target || typeof attachmentsAPI?.addAvailableFiles !== "function") {
-        return;
-      }
-      await attachmentsAPI.addAvailableFiles([target]);
-      const pdfID = await this.waitForFirstPdfAttachmentID(item.id);
-      if (pdfID) {
-        await this.notifyItemModifiedForUI(item.id, pdfID);
-        // Refresh the panel row so the find-PDF marker becomes the PDF marker.
+      // As the panel's Find Full Text button; then refresh the panel row so
+      // the find-PDF marker becomes the PDF marker
+      if (await findFullText(item.id)) {
         this.updateRowStatus(entry);
       }
     } catch (err) {
@@ -17487,68 +17382,18 @@ toolbarbutton.zinspire-refresh.section-custom-button.zinspire-section-button-loa
       await this.openPdfForLocalItem(entry.localItemID);
       InspireReferencePanelController.syncBackButtonStates();
     } else if (state === "find-pdf") {
-      // Find Full Text - use Zotero's built-in PDF finder
-      // Show loading state
-      button.replaceChildren();
-      const loadingSpan = this.body.ownerDocument.createElement("span");
-      loadingSpan.textContent = "⏳";
-      loadingSpan.style.fontSize = "12px";
-      button.appendChild(loadingSpan);
-      button.disabled = true;
-
-      const doc = this.body.ownerDocument;
-      const pdfStrings = {
-        pdfOpen: getString("references-panel-pdf-open" as FluentMessageId),
-        pdfFind: getString("references-panel-pdf-find" as FluentMessageId),
-      };
-      // The search takes a while: if another list was drawn meanwhile, the
-      // row may show one of its papers, and is then left alone
-      const showResult = (result: PdfButtonState) => {
-        if (this.rowShowing(entry, button)) {
-          renderPdfButtonIcon(doc, button, result, pdfStrings);
-        }
-      };
-
-      try {
-        // Match Zotero main-window context menu behavior:
-        // ZoteroPane.findFilesForSelectedItems() → Zotero.Attachments.addAvailableFiles()
-        // Running in the main window context helps ensure notifier-driven UI updates fire.
-        const mainWin = Zotero.getMainWindow?.() as any;
-        const Z: any = mainWin?.Zotero || Zotero;
-        const item =
-          typeof Z.Items?.get === "function"
-            ? Z.Items.get(entry.localItemID)
-            : Zotero.Items.get(entry.localItemID);
-        const attachmentsAPI: any = Z.Attachments || Zotero.Attachments;
-
-        if (item && attachmentsAPI?.addAvailableFiles) {
-          // addAvailableFiles takes an array of items and shows a progress dialog
-          await attachmentsAPI.addAvailableFiles([item]);
-          // Some environments update attachments asynchronously after the promise resolves.
-          // Poll briefly to make PDF detection robust.
-          const pdfID = await this.waitForFirstPdfAttachmentID(
-            entry.localItemID,
-          );
-          if (pdfID) {
-            // Success - render PDF icon
-            showResult(PdfButtonState.HAS_PDF);
-            // Force UI refresh so the main window reflects the new attachment immediately.
-            await this.notifyItemModifiedForUI(entry.localItemID, pdfID);
-          } else {
-            // Not found - restore original state
-            showResult(PdfButtonState.FIND_PDF);
-          }
-        } else {
-          showResult(PdfButtonState.FIND_PDF);
-        }
-      } catch (err) {
-        Zotero.debug(`[${config.addonName}] Find Full Text failed: ${err}`);
-        showResult(PdfButtonState.FIND_PDF);
-      }
-
-      if (this.rowShowing(entry, button)) {
-        button.disabled = false;
-      }
+      // Find Full Text - use Zotero's built-in PDF finder. The search takes
+      // a while: if another list was drawn meanwhile, the row may show one
+      // of its papers, and is then left alone
+      await showFullTextSearch(
+        button,
+        findFullText(entry.localItemID),
+        () => Boolean(this.rowShowing(entry, button)),
+        {
+          pdfOpen: getString("references-panel-pdf-open" as FluentMessageId),
+          pdfFind: getString("references-panel-pdf-find" as FluentMessageId),
+        },
+      );
     }
   }
 
