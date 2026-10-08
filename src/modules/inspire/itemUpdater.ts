@@ -214,7 +214,7 @@ export class ZInspire {
    */
   private showFinalNotice(
     operation: string,
-    counts: Pick<UpdateRun, "counter" | "crossRefCounter" | "CNKIcounter" | "noRecidCount">,
+    counts: Pick<UpdateRun, "counter" | "crossRefCounter" | "CNKIcounter" | "noRecidCount" | "total">,
   ) {
     const progressWindow = new ztoolkit.ProgressWindow(config.addonName, {
       closeOnClick: true,
@@ -250,18 +250,23 @@ export class ZInspire {
       progressWindow.show();
       progressWindow.startCloseTimer(3000);
     } else if (operation === "citations") {
+      let noCitation = counts.total - (counts.counter + counts.crossRefCounter + counts.CNKIcounter);
       progressWindow.createLine({
         icon: PLUGIN_ICON,
         text:
+          (counts.counter ? 
           "INSPIRE citations updated for " +
           counts.counter +
-          (counts.counter === 1 ? " item;\n" : " items;\n") +
+          (counts.counter === 1 ? " item;\n" : " items;\n") : "") +
+          (counts.crossRefCounter ? 
           "CrossRef citations updated for " +
           counts.crossRefCounter +
-          (counts.crossRefCounter === 1 ? " item;\n" : " items;\n") +
+          (counts.crossRefCounter === 1 ? " item;\n" : " items;\n") : "") +
+          (counts.CNKIcounter ? 
           "CNKI citations updated for " +
           counts.CNKIcounter +
-          (counts.CNKIcounter === 1 ? " item." : " items."),
+          (counts.CNKIcounter === 1 ? " item." : " items.") : "") + 
+          (noCitation ? `\n${noCitation} item${noCitation === 1 ? "" : "s"} had no citations.` : ""),
         progress: 100,
       });
     }
@@ -665,6 +670,7 @@ export class ZInspire {
         crossRefCounter: 0,
         CNKIcounter: 0,
         noRecidCount: 0,
+        total: 0,
       });
       return;
     }
@@ -1303,17 +1309,6 @@ export class ZInspire {
     const citationKey = (
       item.getField("citationKey") as string | undefined
     )?.trim();
-    // let citationKey = (item.getField("citationKey") as string | undefined)?.trim();
-    // if (!citationKey) {
-    //   const extra = item.getField("extra") as string | undefined;
-    //   if (extra) {
-    //     const match = extra.match(/^Citation\s+Key:\s*(\S+)/m);
-    //     if (match) citationKey = match[1];
-    //     else citationKey = undefined;
-    //   } else {
-    //     citationKey = undefined;
-    //   }
-    // }
     if (!citationKey) {
       this.showCopyNotification(
         getString("copy-error-no-citation-key"),

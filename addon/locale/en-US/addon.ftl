@@ -387,8 +387,6 @@ references-panel-chart-selfcite-filter = Excl. self-cit.
 references-panel-chart-selfcite-filter-tooltip = Use citation counts without self-citations when in "By Citations" mode.
 references-panel-chart-published-only = Published
 references-panel-chart-published-only-tooltip = Filter: only show papers with journal information (excludes arXiv-only papers)
-references-panel-chart-total = Total
-references-panel-chart-filtered = Filtered
 
 # Rate limiter localization strings
 references-panel-rate-limit-tooltip = INSPIRE API rate limit status
