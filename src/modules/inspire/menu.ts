@@ -48,9 +48,9 @@ export class ZInsMenu {
     const isItem = context === "item";
     const updateHandler = isItem
       ? (operation: string) =>
-        _globalThis.inspire.updateSelectedItems(operation)
+          _globalThis.inspire.updateSelectedItems(operation)
       : (operation: string) =>
-        _globalThis.inspire.updateSelectedCollection(operation);
+          _globalThis.inspire.updateSelectedCollection(operation);
     const cacheHandler = isItem
       ? () => _globalThis.inspire.downloadReferencesCacheForSelection()
       : () => _globalThis.inspire.downloadReferencesCacheForCollection();
