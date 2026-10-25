@@ -3,7 +3,16 @@
 > This document provides technical details for the INSPIRE References Panel, the arXiv browser (section 15) and related functionality.
 > It serves as a reference for developers and advanced users. The plugin requires Zotero 10.
 
+See [Zotero 11 beta compatibility](ZOTERO_11_COMPATIBILITY.md) for preparation
+status and the checks required before declaring support.
+
 ---
+
+Since 4.1.1, the plugin uses only `BasicTool`, `UITool` and `ProgressWindowHelper` from toolkit 6.0.0. INSPIRE context menus use `Zotero.MenuManager`, with explicit cleanup on plugin shutdown. The plugin does not register the toolkit's external plugin-installation or debug-execution protocol handlers.
+
+Library item and collection menus register a single INSPIRE submenu. Zotero groups these targets and supplies their top-level separators; separators between commands belong inside the submenu.
+
+PDF-tab menus use the native `main/tab` context. Paper actions receive the clicked attachment's parent explicitly; funding extraction receives the attachment itself. They never change or fall back to the library selection. Menu icons use a dedicated PNG with centered, bold vector lettering and explicit image and list-style settings.
 
 ## 1. INSPIRE References Panel
 

@@ -1,48 +1,50 @@
 import { config } from "../../../package.json";
-import { getString } from "../../utils/locale";
+import { INSPIRE_MENU_ICON, menuLabel } from "./menuAppearance";
+
+type MenuData =
+  _ZoteroTypes.MenuManager.MenuData<_ZoteroTypes.MenuManager.LibraryMenuContext>;
 
 export class ZInsMenu {
+  private static registeredMenus: Partial<
+    Record<"item" | "collection", string>
+  > = {};
+
   static registerRightClickMenuPopup() {
-    ztoolkit.Menu.register("item", {
-      tag: "menuseparator",
-      isHidden: () =>
-        Zotero.getActiveZoteroPane()
-          ?.getSelectedItems()
-          .some((item) => {
-            return !item.isRegularItem();
-          }),
-    });
-    const menuIcon = `chrome://${config.addonRef}/content/icons/inspire.svg`;
-    ztoolkit.Menu.register("item", {
-      tag: "menu",
-      label: getString("menupopup-label"),
-      children: this.buildMenuChildren("item") as any,
-      icon: menuIcon,
-      isHidden: () =>
-        Zotero.getActiveZoteroPane()
-          ?.getSelectedItems()
-          .some((item) => {
-            return !item.isRegularItem();
-          }),
-    });
+    this.registerMenu("item");
   }
 
   static registerRightClickCollectionMenu() {
-    ztoolkit.Menu.register("collection", {
-      tag: "menuseparator",
-    });
-    const menuIcon = `chrome://${config.addonRef}/content/icons/inspire.svg`;
-    ztoolkit.Menu.register("collection", {
-      tag: "menu",
-      label: getString("menupopup-label"),
-      children: this.buildMenuChildren("collection") as any,
-      icon: menuIcon,
-    });
+    this.registerMenu("collection");
   }
 
-  private static buildMenuChildren(
-    context: "item" | "collection",
-  ): Array<Record<string, any>> {
+  static unregisterMenus() {
+    for (const id of Object.values(this.registeredMenus)) {
+      Zotero.MenuManager.unregisterMenu(id);
+    }
+    this.registeredMenus = {};
+  }
+
+  private static registerMenu(context: "item" | "collection") {
+    if (this.registeredMenus[context]) return;
+    const id = Zotero.MenuManager.registerMenu({
+      menuID: `${config.addonRef}-inspire-${context}`,
+      pluginID: config.addonID,
+      target:
+        context === "item" ? "main/library/item" : "main/library/collection",
+      menus: [
+        // Zotero groups these targets and inserts the top-level separator.
+        {
+          menuType: "submenu",
+          onShowing: menuLabel("menupopup-label", true),
+          menus: this.buildMenuChildren(context),
+          icon: INSPIRE_MENU_ICON,
+        },
+      ],
+    });
+    if (id) this.registeredMenus[context] = id;
+  }
+
+  private static buildMenuChildren(context: "item" | "collection"): MenuData[] {
     const isItem = context === "item";
     const updateHandler = isItem
       ? (operation: string) =>
@@ -53,38 +55,38 @@ export class ZInsMenu {
       ? () => _globalThis.inspire.downloadReferencesCacheForSelection()
       : () => _globalThis.inspire.downloadReferencesCacheForCollection();
 
-    const children: Array<Record<string, any>> = [
+    const children: MenuData[] = [
       {
-        tag: "menuitem",
-        label: getString("menuitem-submenulabel0"),
-        commandListener: () => updateHandler("full"),
+        menuType: "menuitem",
+        onShowing: menuLabel("menuitem-submenulabel0"),
+        onCommand: () => updateHandler("full"),
       },
       {
-        tag: "menuitem",
-        label: getString("menuitem-submenulabel1"),
-        commandListener: () => updateHandler("noabstract"),
+        menuType: "menuitem",
+        onShowing: menuLabel("menuitem-submenulabel1"),
+        onCommand: () => updateHandler("noabstract"),
       },
       {
-        tag: "menuitem",
-        label: getString("menuitem-submenulabel2"),
-        commandListener: () => updateHandler("citations"),
+        menuType: "menuitem",
+        onShowing: menuLabel("menuitem-submenulabel2"),
+        onCommand: () => updateHandler("citations"),
       },
-      { tag: "menuseparator" },
+      { menuType: "separator" },
       {
-        tag: "menuitem",
-        label: getString("menuitem-download-cache"),
-        commandListener: () => cacheHandler(),
+        menuType: "menuitem",
+        onShowing: menuLabel("menuitem-download-cache"),
+        onCommand: () => cacheHandler(),
       },
     ];
 
     if (isItem) {
       // Citation graph actions for items (FTR-CITATION-GRAPH / Phase 3.1)
       children.push(
-        { tag: "menuseparator" },
+        { menuType: "separator" },
         {
-          tag: "menuitem",
-          label: getString("menuitem-citation-graph-merge"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("menuitem-citation-graph-merge"),
+          onCommand: () => {
             _globalThis.inspire.openCombinedCitationGraphFromSelection?.();
           },
         },
@@ -92,79 +94,79 @@ export class ZInsMenu {
 
       // Copy actions for items
       children.push(
-        { tag: "menuseparator" },
+        { menuType: "separator" },
         {
-          tag: "menuitem",
-          label: getString("menuitem-copy-bibtex"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("menuitem-copy-bibtex"),
+          onCommand: () => {
             _globalThis.inspire.copyBibTeX();
           },
         },
         {
-          tag: "menuitem",
-          label: getString("menuitem-copy-citation-key"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("menuitem-copy-citation-key"),
+          onCommand: () => {
             _globalThis.inspire.copyCitationKey();
           },
         },
         {
-          tag: "menuitem",
-          label: getString("menuitem-copy-inspire-recid"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("menuitem-copy-inspire-recid"),
+          onCommand: () => {
             _globalThis.inspire.copyInspireRecid();
           },
         },
         {
-          tag: "menuitem",
-          label: getString("menuitem-copy-inspire-link"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("menuitem-copy-inspire-link"),
+          onCommand: () => {
             _globalThis.inspire.copyInspireLink();
           },
         },
         {
-          tag: "menuitem",
-          label: getString("menuitem-copy-inspire-link-md"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("menuitem-copy-inspire-link-md"),
+          onCommand: () => {
             _globalThis.inspire.copyInspireLinkMarkdown();
           },
         },
         {
-          tag: "menuitem",
-          label: getString("menuitem-copy-zotero-link"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("menuitem-copy-zotero-link"),
+          onCommand: () => {
             _globalThis.inspire.copyZoteroLink();
           },
         },
         {
-          tag: "menuitem",
-          label: getString("menuitem-copy-funding"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("menuitem-copy-funding"),
+          onCommand: () => {
             _globalThis.inspire.copyFundingInfo();
           },
         },
         // Collaboration tags for selected items (FTR-COLLAB-TAGS)
-        { tag: "menuseparator" },
+        { menuType: "separator" },
         {
-          tag: "menuitem",
-          label: getString("collab-tag-menu-add"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("collab-tag-menu-add"),
+          onCommand: () => {
             _globalThis.inspire.addCollabTagsToSelection?.();
           },
         },
         // Preprint check for selected items (FTR-PREPRINT-WATCH)
-        { tag: "menuseparator" },
+        { menuType: "separator" },
         {
-          tag: "menuitem",
-          label: getString("preprint-check-menu"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("preprint-check-menu"),
+          onCommand: () => {
             _globalThis.inspire.checkSelectedItemsPreprints?.();
           },
         },
         // Favorite paper (FTR-FAVORITE-PAPERS)
         {
-          tag: "menuitem",
-          label: getString("menuitem-favorite-paper"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("menuitem-favorite-paper"),
+          onCommand: () => {
             _globalThis.inspire.toggleFavoritePaperFromMenu?.();
           },
         },
@@ -172,11 +174,11 @@ export class ZInsMenu {
     } else {
       // Citation graph actions for collections (FTR-CITATION-GRAPH / Phase 3.1)
       children.push(
-        { tag: "menuseparator" },
+        { menuType: "separator" },
         {
-          tag: "menuitem",
-          label: getString("menuitem-citation-graph-merge"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("menuitem-citation-graph-merge"),
+          onCommand: () => {
             _globalThis.inspire.openCombinedCitationGraphFromCollection?.();
           },
         },
@@ -184,11 +186,11 @@ export class ZInsMenu {
 
       // Collection-specific actions (FTR-PREPRINT-WATCH)
       children.push(
-        { tag: "menuseparator" },
+        { menuType: "separator" },
         {
-          tag: "menuitem",
-          label: getString("preprint-check-collection-menu"),
-          commandListener: async () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("preprint-check-collection-menu"),
+          onCommand: async () => {
             Zotero.debug(
               "[zotero-inspire] Menu: checkPreprintsInCollection clicked",
             );
@@ -202,9 +204,9 @@ export class ZInsMenu {
           },
         },
         {
-          tag: "menuitem",
-          label: getString("preprint-check-all-menu"),
-          commandListener: async () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("preprint-check-all-menu"),
+          onCommand: async () => {
             Zotero.debug(
               "[zotero-inspire] Menu: checkAllPreprintsInLibrary clicked",
             );
@@ -218,11 +220,11 @@ export class ZInsMenu {
           },
         },
         // Collaboration tags for collection items (FTR-COLLAB-TAGS)
-        { tag: "menuseparator" },
+        { menuType: "separator" },
         {
-          tag: "menuitem",
-          label: getString("collab-tag-menu-reapply"),
-          commandListener: () => {
+          menuType: "menuitem",
+          onShowing: menuLabel("collab-tag-menu-reapply"),
+          onCommand: () => {
             _globalThis.inspire.reapplyCollabTagsToCollection?.();
           },
         },
@@ -230,11 +232,11 @@ export class ZInsMenu {
     }
 
     children.push(
-      { tag: "menuseparator" },
+      { menuType: "separator" },
       {
-        tag: "menuitem",
-        label: getString("menuitem-cancel-update"),
-        commandListener: () => {
+        menuType: "menuitem",
+        onShowing: menuLabel("menuitem-cancel-update"),
+        onCommand: () => {
           _globalThis.inspire.cancelUpdate();
         },
       },

@@ -362,6 +362,8 @@ Click the export button in the toolbar:
 
 ## PDF Reader Integration
 
+Right-click an open PDF's tab and choose **INSPIRE** to update its paper's metadata, view its INSPIRE record, copy BibTeX or links, extract funding information, check publication status, or toggle its favorite status. The commands use the clicked tab's paper, including when that tab is in the background.
+
 When reading a PDF in Zotero:
 
 1. **Select text containing citations** (e.g., "see Refs. [1,2,3]")

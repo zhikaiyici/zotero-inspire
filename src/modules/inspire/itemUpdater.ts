@@ -371,8 +371,9 @@ export class ZInspire {
     }
   }
 
-  updateSelectedItems(operation: string) {
-    const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
+  updateSelectedItems(operation: string, sourceItems?: Zotero.Item[]) {
+    const items =
+      sourceItems ?? Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
     this.updateItemsConcurrent(items, operation, true);
   }
 
@@ -1164,8 +1165,9 @@ export class ZInspire {
    * Get the single selected regular item, or show an error notification.
    * Returns null if selection is invalid.
    */
-  private getSelectedSingleItem(): Zotero.Item | null {
-    const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
+  private getSelectedSingleItem(sourceItems?: Zotero.Item[]): Zotero.Item | null {
+    const items =
+      sourceItems ?? Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
     const regularItems = items.filter((item) => item?.isRegularItem());
     if (regularItems.length !== 1) {
       this.showCopyNotification(getString("copy-error-no-selection"), "fail");
@@ -1177,8 +1179,9 @@ export class ZInspire {
   /**
    * Get all selected regular items. Shows an error if none are selected.
    */
-  private getSelectedRegularItems(): Zotero.Item[] {
-    const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
+  private getSelectedRegularItems(sourceItems?: Zotero.Item[]): Zotero.Item[] {
+    const items =
+      sourceItems ?? Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
     const regularItems = items.filter((item) => item?.isRegularItem());
     if (!regularItems.length) {
       this.showCopyNotification(getString("copy-error-no-selection"), "fail");
@@ -1190,8 +1193,9 @@ export class ZInspire {
    * Get selected items for funding extraction (regular items or PDF attachments).
    * Shows an error if no valid items are selected.
    */
-  private getSelectedItemsForFunding(): Zotero.Item[] {
-    const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
+  private getSelectedItemsForFunding(sourceItems?: Zotero.Item[]): Zotero.Item[] {
+    const items =
+      sourceItems ?? Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
     const validItems = items.filter(
       (item) => item?.isRegularItem() || item?.isPDFAttachment(),
     );
@@ -1217,8 +1221,8 @@ export class ZInspire {
   /**
    * Copy BibTeX from INSPIRE for the selected item.
    */
-  async copyBibTeX() {
-    const items = this.getSelectedRegularItems();
+  async copyBibTeX(sourceItems?: Zotero.Item[]) {
+    const items = this.getSelectedRegularItems(sourceItems);
     if (!items.length) return;
 
     const recids = Array.from(
@@ -1268,8 +1272,8 @@ export class ZInspire {
   /**
    * Copy INSPIRE literature URL for the selected item.
    */
-  async copyInspireLink() {
-    const item = this.getSelectedSingleItem();
+  async copyInspireLink(sourceItems?: Zotero.Item[]) {
+    const item = this.getSelectedSingleItem(sourceItems);
     if (!item) return;
 
     const recid = deriveRecidFromItem(item);
@@ -1296,8 +1300,8 @@ export class ZInspire {
   /**
    * Copy INSPIRE link as Markdown format: [citation_key](url)
    */
-  async copyInspireLinkMarkdown() {
-    const item = this.getSelectedSingleItem();
+  async copyInspireLinkMarkdown(sourceItems?: Zotero.Item[]) {
+    const item = this.getSelectedSingleItem(sourceItems);
     if (!item) return;
 
     const recid = deriveRecidFromItem(item);
@@ -1336,8 +1340,8 @@ export class ZInspire {
   /**
    * Copy citation key for the selected item.
    */
-  async copyCitationKey() {
-    const items = this.getSelectedRegularItems();
+  async copyCitationKey(sourceItems?: Zotero.Item[]) {
+    const items = this.getSelectedRegularItems(sourceItems);
     if (!items.length) return;
 
     const citationKeys = items
@@ -1372,8 +1376,8 @@ export class ZInspire {
   /**
    * Copy INSPIRE recid for the selected items.
    */
-  async copyInspireRecid() {
-    const items = this.getSelectedRegularItems();
+  async copyInspireRecid(sourceItems?: Zotero.Item[]) {
+    const items = this.getSelectedRegularItems(sourceItems);
     if (!items.length) return;
 
     const recids: string[] = [];
@@ -1411,8 +1415,8 @@ export class ZInspire {
    * Copy Zotero select link for the selected item.
    * Format: zotero://select/library/items/KEY or zotero://select/groups/GROUPID/items/KEY
    */
-  async copyZoteroLink() {
-    const item = this.getSelectedSingleItem();
+  async copyZoteroLink(sourceItems?: Zotero.Item[]) {
+    const item = this.getSelectedSingleItem(sourceItems);
     if (!item) return;
 
     const libraryID = item.libraryID;
@@ -1449,8 +1453,8 @@ export class ZInspire {
    * Copy funding info from PDF acknowledgments.
    * Supports both regular items and PDF attachments directly.
    */
-  async copyFundingInfo() {
-    const items = this.getSelectedItemsForFunding();
+  async copyFundingInfo(sourceItems?: Zotero.Item[]) {
+    const items = this.getSelectedItemsForFunding(sourceItems);
     if (!items.length) return;
     await copyFundingInfo(items);
   }
@@ -1463,8 +1467,8 @@ export class ZInspire {
    * Toggle favorite paper or presentation status for selected item from main window menu.
    * FTR-FAVORITE-PAPERS / FTR-FAVORITE-PRESENTATIONS
    */
-  toggleFavoritePaperFromMenu() {
-    const items = ZoteroPane.getSelectedItems();
+  toggleFavoritePaperFromMenu(sourceItems?: Zotero.Item[]) {
+    const items = sourceItems ?? ZoteroPane.getSelectedItems();
     if (!items || items.length !== 1) {
       new ztoolkit.ProgressWindow(config.addonName)
         .createLine({
@@ -1698,11 +1702,12 @@ export class ZInspire {
    * Check preprint status for selected items.
    * Main entry point from item context menu.
    */
-  async checkSelectedItemsPreprints(): Promise<void> {
+  async checkSelectedItemsPreprints(sourceItems?: Zotero.Item[]): Promise<void> {
     Zotero.debug(`[${config.addonName}] checkSelectedItemsPreprints: starting`);
 
     try {
-      const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
+      const items =
+        sourceItems ?? Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
       Zotero.debug(
         `[${config.addonName}] checkSelectedItemsPreprints: selected ${items.length} items`,
       );

@@ -21,6 +21,8 @@ import {
   registerInspireItemTreeColumns,
   unregisterInspireItemTreeColumns,
   refreshInspireItemTreeColumns,
+  registerInspireReaderTabMenu,
+  unregisterInspireReaderTabMenu,
 } from "./modules/inspire";
 import {
   ENRICH_BATCH_RANGE,
@@ -90,6 +92,9 @@ async function onStartup() {
   ZInsUtils.registerPrefs();
   ZInsUtils.registerNotifier();
   registerArxivBrowserMenu(openArxivBrowser);
+  ZInsMenu.registerRightClickMenuPopup();
+  ZInsMenu.registerRightClickCollectionMenu();
+  registerInspireReaderTabMenu();
 
   // One-time migration: the legacy china-only boolean (FTR-FUNDING-EXTRACTION)
   // is superseded by funding_filter_mode. funding_filter_mode has a default of
@@ -193,8 +198,6 @@ async function onMainWindowLoad(_win: Window): Promise<void> {
   // After INSPIRE's section, so that its button comes after INSPIRE's
   registerArxivBrowserSidenav(ZInspireReferencePane.paneID);
 
-  ZInsMenu.registerRightClickMenuPopup();
-  ZInsMenu.registerRightClickCollectionMenu();
   addArxivBrowserButton(_win, openArxivBrowser);
 
   // FTR-PDF-ANNOTATE: Initialize Reader integration for citation detection
@@ -235,6 +238,8 @@ function onShutdown(): void {
   // Before the plugin's chrome:// files are unregistered
   closeArxivBrowser();
   unregisterArxivBrowserMenu();
+  ZInsMenu.unregisterMenus();
+  unregisterInspireReaderTabMenu();
   unregisterArxivBrowserSidenav();
   for (const win of Zotero.getMainWindows()) {
     removeArxivBrowserButton(win);

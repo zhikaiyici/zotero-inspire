@@ -503,6 +503,10 @@ export {
 
 export { fetchAuthorRecord, retainAuthorRecord } from "./authorProfileRecords";
 export {
+  registerInspireReaderTabMenu,
+  unregisterInspireReaderTabMenu,
+} from "./readerTabMenu";
+export {
   academicEducationYears,
   academicNodeOrder,
   academicSortYears,
